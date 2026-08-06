@@ -836,6 +836,3 @@ server {
 
 ---
 
-<p align="center">
-  <em>Made with ❤️ for Moroccan financial document processing</em>
-</p>
