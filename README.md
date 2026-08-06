@@ -260,7 +260,7 @@ These are the 20 financial fields extracted by the system:
 | **HTTP Client** | [httpx](https://www.python-httpx.org/) | Async HTTP for Ollama API calls |
 | **Data Validation** | [Pydantic](https://docs.pydantic.dev/) v2 | Schema validation, serialization, and API documentation |
 | **Database** | SQLite (stdlib) | Dossier persistence, audit trail, sessions |
-| **Frontend** | Vanilla HTML + CSS + JS | Single-page UI with drag-and-drop, SSE progress, and results |
+| **Frontend** | React 18 + React Router + Vite | Responsive single-page UI with a component architecture, drag-and-drop, and SSE progress |
 | **Env Config** | [python-dotenv](https://pypi.org/project/python-dotenv/) | Environment variable management |
 | **ASGI Server** | [Uvicorn](https://www.uvicorn.org/) | Production-grade async server |
 
@@ -325,16 +325,11 @@ wafabail-rcc/
 │       ├── dossier_store.py         # SQLite-backed dossier persistence
 │       └── rcc_compliance.py        # Compliance rules engine
 │
-├── static/                          # Frontend assets
-│   ├── index.html                   # Main single-page application
-│   ├── style.css                    # Styling
-│   ├── app.js                       # Client-side logic (upload, SSE, rendering)
-│   └── js/                          # Modular JS components
-│       ├── api.js                   # API client functions
-│       ├── fields.js                # RCC field rendering
-│       ├── modal.js                 # Modal dialogs
-│       ├── util.js                  # Utility functions
-│       └── views/                   # View components
+├── frontend/                        # React + Vite source application
+│   ├── src/                         # Screens, components, hooks, API client and styles
+│   ├── package.json                 # Frontend scripts and dependencies
+│   └── vite.config.js               # Development API proxy and production output
+├── static/                          # Generated Vite assets served by FastAPI
 │
 ├── scripts/
 │   └── seed_demo.py                 # Generate demo dossiers for testing
@@ -445,8 +440,17 @@ All settings are read from environment variables (loaded from `.env` via `python
 ### Development Mode
 
 ```bash
+# Terminal 1 — FastAPI
 uvicorn main:app --reload --host 127.0.0.1 --port 8001
+
+# Terminal 2 — React development server with /api proxy
+cd frontend
+npm install
+npm run dev
 ```
+
+For a production-style local build, run `npm run build` from `frontend/`.
+The generated files are written to `static/` and then served by FastAPI.
 
 ### Access Points
 
@@ -696,18 +700,21 @@ Tolerance: `max(1.00 MAD, 0.01% of reference value)`
 
 The web interface provides:
 
-- **📤 Drag-and-drop upload** — drop a PDF or click to browse
-- **📊 Real-time progress** — page-by-page extraction with a live progress bar via SSE
-- **📋 Results table** — all 20 RCC fields with values, confidence badges, and status indicators
-- **📄 JSON export** — copy results to clipboard for integration
-- **🏢 Company info** — auto-detected company name and completeness score
+- **Drag-and-drop upload** — deposit a tax return PDF and follow its extraction in real time via SSE
+- **Human RCC validation queue** — search, filter, correct, verify, escalate, reject, or validate dossiers with a complete audit trail
+- **In-app PDF evidence review** — the original document is rendered in the dossier view; selecting a field or extracted zone opens its precise source page and highlights the matched OCR evidence
+- **Extracted zones register** — each evidence item exposes the field, original label/value, source page, OCR confidence, and source excerpt
+- **Analyst exports** — download a native Excel workbook with `Synthèse`, `Données RCC`, `Zones extraites`, and `Contrôles` sheets, or a branded PDF validation report ready to archive or share
+- **Responsive and accessible interface** — keyboard navigation, visible focus states, reduced-motion support, and French financial formatting
 
 ### Technology
 
-The frontend is built with **vanilla HTML, CSS, and JavaScript** — no framework dependencies. It communicates with the backend via:
+The frontend is built with **React 18**, **React Router**, and **Vite**. It communicates with the backend via:
 
 - `fetch()` for REST API calls
 - `EventSource` for SSE real-time progress
+- `pdfjs-dist` for controlled PDF rendering and evidence highlighting
+- `xlsx` for native Excel exports and `jspdf` / `jspdf-autotable` for analyst PDF reports
 
 ---
 
@@ -720,7 +727,7 @@ The frontend is built with **vanilla HTML, CSS, and JavaScript** — no framewor
 uvicorn main:app --host 127.0.0.1 --port 8001
 
 # In another terminal:
-python -m pytest tests/ -v
+python tests/test_api_smoke.py
 ```
 
 The smoke tests in `tests/test_api_smoke.py` cover:
@@ -728,6 +735,7 @@ The smoke tests in `tests/test_api_smoke.py` cover:
 - PDF upload and job creation
 - Job status polling
 - Result retrieval
+- Authentication, dossier workflow, overrides, compliance rules, audit history, search, and PDF delivery
 - Error handling (invalid files, missing jobs)
 
 ---
@@ -824,7 +832,7 @@ server {
 ### Code Style
 
 - Python: Follow PEP 8, use type hints, French docstrings for domain logic
-- Frontend: Vanilla JS, no build step, ES module-style organization
+- Frontend: React components and hooks, Vite build step, ES module-style organization
 - Naming: `snake_case` for Python, `camelCase` for JavaScript
 
 ---

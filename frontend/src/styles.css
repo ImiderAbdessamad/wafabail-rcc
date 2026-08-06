@@ -353,6 +353,31 @@ a { color: var(--accent-text); text-decoration: none; }
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
 
 .view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+/* Écran d'amorçage, le temps de sonder la session */
+.app-booting {
+  min-height: 100vh; display: grid; place-items: center; padding: 24px;
+  background:
+    radial-gradient(circle at 12% 12%, rgba(232, 93, 12, .10), transparent 28rem),
+    radial-gradient(circle at 90% 92%, rgba(21, 17, 14, .08), transparent 30rem),
+    var(--bg-2);
+}
+.app-booting-card {
+  width: min(100%, 390px); display: flex; align-items: center; gap: 13px;
+  padding: 17px 18px; background: rgba(255, 255, 255, .92);
+  border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: var(--shadow-md);
+}
+.app-booting-mark {
+  width: 38px; height: 38px; display: grid; place-items: center; flex: 0 0 38px;
+  border-radius: 10px; color: #fff; font-size: 15px; font-weight: 800;
+  background: linear-gradient(135deg, var(--accent), #b8460a);
+}
+.app-booting-title { color: var(--ink); font-size: 13px; font-weight: 750; }
+.app-booting-copy { margin-top: 2px; color: var(--muted); font-size: 11.5px; }
+.app-booting-spinner {
+  width: 18px; height: 18px; margin-left: auto; flex: 0 0 18px; border: 2px solid var(--accent-border);
+  border-top-color: var(--accent-btn); border-radius: 50%; animation: spin .75s linear infinite;
+}
 .view[hidden] { display: none; }
 .view.is-entering { animation: fadeIn var(--t) var(--ease); }
 
@@ -580,6 +605,28 @@ a { color: var(--accent-text); text-decoration: none; }
 }
 .viewer-file { font-weight: 600; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .viewer-frame { flex: 1; min-height: 0; border: none; width: 100%; background: var(--bg-2); }
+
+/* Lecteur PDF rendu dans l'application : les preuves OCR restent visibles et actionnables. */
+.pdf-viewer { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg-2); }
+.viewer-page-count { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.viewer-toolbar .is-selected { color: var(--accent-text); border-color: var(--accent-border); background: var(--accent-soft); }
+.pdf-canvas-scroll { display: flex; justify-content: center; padding: 12px; background: #E9EDF1; }
+.pdf-stage { display: grid; place-items: start center; min-width: 100%; min-height: 100%; }
+.pdf-status { margin-top: 32px; color: var(--muted); font-size: 12px; }
+.pdf-status-error { color: var(--bad-text); }
+.pdf-page { position: relative; line-height: 0; background: #fff; box-shadow: 0 4px 18px rgba(16, 24, 40, .18); }
+.pdf-page canvas { display: block; }
+.pdf-highlights { position: absolute; inset: 0; pointer-events: none; }
+.pdf-highlight {
+  position: absolute; pointer-events: auto; padding: 0; border: 1px solid rgba(180, 83, 9, .46);
+  border-radius: 2px; background: rgba(250, 204, 21, .30); mix-blend-mode: multiply;
+  transition: background var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+.pdf-highlight:hover, .pdf-highlight:focus-visible { background: rgba(245, 158, 11, .48); border-color: var(--accent-text); box-shadow: 0 0 0 2px rgba(232, 93, 12, .24); }
+.pdf-highlight.is-active { background: rgba(232, 93, 12, .36); border: 2px solid var(--accent-btn); box-shadow: 0 0 0 3px rgba(232, 93, 12, .19); }
+.pdf-highlight.is-important { background: rgba(250, 204, 21, .56); border-color: #A16207; }
+.pdf-highlight.is-active.is-important { background: rgba(232, 93, 12, .46); }
+.pdf-pagination { flex: 0 0 auto; min-height: 47px; display: flex; align-items: center; justify-content: center; gap: 10px; background: #fff; border-top: 1px solid var(--line); color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 
 /* ============================ Zones extraites ============================ */
 .zone {

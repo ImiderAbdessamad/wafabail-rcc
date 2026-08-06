@@ -28,3 +28,7 @@ htmlcov/
 *.swp
 .DS_Store
 Thumbs.db
+
+# Front-end React
+frontend/node_modules/
+frontend/dist/
