@@ -6,12 +6,15 @@ import json
 import logging
 from typing import AsyncIterator, Optional
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app.config import DIRECT_FINANCIAL_MAX_PAGES, MAX_UPLOAD_BYTES
+from app.schemas.dossier import SessionUser
 from app.schemas.rcc import RccAnalysisResult, RccJobCreateResponse, RccJobProgress
+from app.services.auth import require_analyst
 from app.services.direct_financial_extraction_pipeline import run_financial_job
+from app.services.dossier_store import store_pdf
 from app.services.financial_job_store import job_store
 
 logger = logging.getLogger(__name__)
@@ -65,6 +68,7 @@ async def create_rcc_job(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(..., description="PDF de liasse fiscale"),
     max_pages: Optional[int] = Form(None),
+    _user: SessionUser = Depends(require_analyst),
 ) -> RccJobCreateResponse:
     """Crée un job d'extraction RCC asynchrone (progression via SSE)."""
     if max_pages is not None and max_pages < 1:
@@ -82,6 +86,13 @@ async def create_rcc_job(
         include_markdown=False,
         max_pages=max_pages,
     )
+    # Le job store libère `pdf_bytes` en fin d'analyse : on garde une copie sur
+    # disque pour la visionneuse de l'écran de validation.
+    try:
+        store_pdf(job.job_id, content)
+    except OSError:
+        logger.exception("Impossible d'archiver le PDF du job %s", job.job_id)
+
     background_tasks.add_task(_run_job_sequential, job.job_id)
     return RccJobCreateResponse(
         job_id=job.job_id,
@@ -92,7 +103,10 @@ async def create_rcc_job(
 
 
 @router.get("/jobs/{job_id}", response_model=RccJobProgress)
-async def get_rcc_job(job_id: str) -> RccJobProgress:
+async def get_rcc_job(
+    job_id: str,
+    _user: SessionUser = Depends(require_analyst),
+) -> RccJobProgress:
     job = job_store.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job introuvable ou expiré.")
@@ -100,7 +114,10 @@ async def get_rcc_job(job_id: str) -> RccJobProgress:
 
 
 @router.get("/jobs/{job_id}/stream")
-async def stream_rcc_job(job_id: str) -> StreamingResponse:
+async def stream_rcc_job(
+    job_id: str,
+    _user: SessionUser = Depends(require_analyst),
+) -> StreamingResponse:
     """Server-Sent Events pour la progression du job."""
     job = job_store.get(job_id)
     if job is None:
@@ -151,7 +168,10 @@ async def stream_rcc_job(job_id: str) -> StreamingResponse:
     "/jobs/{job_id}/result",
     response_model=RccAnalysisResult,
 )
-async def get_rcc_result(job_id: str) -> RccAnalysisResult:
+async def get_rcc_result(
+    job_id: str,
+    _user: SessionUser = Depends(require_analyst),
+) -> RccAnalysisResult:
     """Résultat RCC : uniquement les postes bilanciels EKIP."""
     job = job_store.get(job_id)
     if job is None:

@@ -36,6 +36,18 @@ RCC_ELEMENTS: list[tuple[int, str, str, str]] = [
 ]
 
 
+class FieldEvidence(BaseModel):
+    """Provenance d'une valeur extraite — alimente le panneau « Zones extraites »."""
+
+    page_number: Optional[int] = None
+    raw_label: Optional[str] = None
+    raw_value: Optional[str] = None
+    column_name: Optional[str] = None
+    page_type: Optional[str] = None
+    confidence: Optional[float] = None
+    source_excerpt: Optional[str] = None
+
+
 class RccField(BaseModel):
     """Un poste bilanciel / CPC destiné à EKIP."""
 
@@ -48,6 +60,24 @@ class RccField(BaseModel):
     status: str = "missing"
     note: Optional[str] = None
     confidence: float = Field(ge=0.0, le=1.0, default=0.0)
+    # Exercice N-1 : renseigné uniquement pour les postes réellement extraits
+    # en N-1 par le pipeline (pas de dérivation côté client).
+    value_n1: Optional[float] = None
+    evidence: list[FieldEvidence] = Field(default_factory=list)
+
+
+class AccountingControlView(BaseModel):
+    """Vue API d'un contrôle comptable (app.services.financial_controls)."""
+
+    code: str
+    status: str  # passed | failed | not_testable
+    label: str
+    expected: Optional[float] = None
+    observed: Optional[float] = None
+    difference: Optional[float] = None
+    tolerance: Optional[float] = None
+    affected_fields: list[str] = Field(default_factory=list)
+    message: str = ""
 
 
 class RccAnalysisResult(BaseModel):
@@ -58,6 +88,7 @@ class RccAnalysisResult(BaseModel):
     fields: list[RccField]
     completeness_pct: float = 0.0
     warnings: list[str] = Field(default_factory=list)
+    controls: list[AccountingControlView] = Field(default_factory=list)
 
 
 class RccJobCreateResponse(BaseModel):

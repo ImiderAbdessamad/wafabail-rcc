@@ -3,121 +3,231 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Wafabail RCC — Extraction bilancielle EKIP</title>
+  <meta name="color-scheme" content="light" />
+  <title>Validation RCC — Wafabail</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <div class="page">
-    <header class="header">
-      <div class="header-badge">
-        <span class="dot"></span>
-        Ollama · GLM Vision · EKIP
+  <!-- Annonces pour lecteurs d'écran -->
+  <div id="srAnnouncer" class="sr-only" role="status" aria-live="polite"></div>
+  <div id="toasts" class="toasts" role="region" aria-label="Notifications"></div>
+
+  <!-- ================= Écran de connexion ================= -->
+  <div id="screenLogin" class="login" hidden>
+    <div class="login-brand">
+      <div class="login-logo">
+        <span class="login-logo-mark" aria-hidden="true">E</span>
+        <span class="login-logo-text">EKIP<span class="muted"> · Validation RCC</span></span>
       </div>
-      <h1>Extraction RCC</h1>
-      <p class="subtitle">
-        Déposez une liasse fiscale PDF — l’API extrait et calcule les postes
-        bilanciels nécessaires pour enrichir le modèle EKIP.
-      </p>
-    </header>
-
-    <main class="layout rcc-layout">
-      <!-- Upload -->
-      <section class="card upload-card">
-        <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choisir un PDF">
-          <input type="file" id="fileInput" accept="application/pdf,.pdf" hidden />
-          <button type="button" class="remove-btn" id="removeFile" hidden aria-label="Retirer">&times;</button>
-
-          <div id="dropzoneEmpty" class="dropzone-empty">
-            <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-              <path d="M4 16.5V18a2 2 0 002 2h12a2 2 0 002-2v-1.5M7 9l5-5 5 5M12 4v12" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <p class="dropzone-title">Glissez la liasse ici</p>
-            <p class="dropzone-hint">PDF uniquement — max 50 Mo</p>
-          </div>
-
-          <div id="previewFile" class="preview-file" hidden>
-            <svg class="preview-file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4">
-              <path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8l-5-5z" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M14 3v5h5" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <span id="previewFileName" class="preview-file-name"></span>
-            <span id="previewFileSize" class="preview-file-size"></span>
-          </div>
-        </div>
-
-        <p class="upload-hint">
-          Le traitement est asynchrone (page par page). Suivez la progression
-          à droite, puis consultez les 20 postes RCC.
+      <div class="login-pitch">
+        <p class="login-eyebrow">Risque de contrepartie</p>
+        <h1>Contrôle humain des bilans extraits par OCR.</h1>
+        <p class="login-lede">
+          Vérifiez les postes financiers extraits de la liasse fiscale, corrigez
+          les valeurs mal reconnues et validez la cohérence comptable avant
+          enrichissement du modèle EKIP.
         </p>
+      </div>
+      <dl class="login-stats">
+        <div><dt>20</dt><dd>postes RCC contrôlés</dd></div>
+        <div><dt id="loginControlCount">8</dt><dd>contrôles comptables</dd></div>
+        <div><dt>100 %</dt><dd>piste d'audit</dd></div>
+      </dl>
+      <span class="login-ring login-ring-a" aria-hidden="true"></span>
+      <span class="login-ring login-ring-b" aria-hidden="true"></span>
+    </div>
 
-        <div class="actions">
-          <button id="analyzeBtn" class="btn btn-primary" disabled>
-            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-              <path d="M12 3v3m0 12v3m9-9h-3M6 12H3m14.95-6.95l-2.12 2.12M8.17 15.83l-2.12 2.12m11.9 0l-2.12-2.12M8.17 8.17L6.05 6.05" stroke-linecap="round"/>
-              <circle cx="12" cy="12" r="3.25"/>
-            </svg>
-            <span id="analyzeBtnLabel">Extraire les champs RCC</span>
-          </button>
-          <button id="resetBtn" class="btn btn-ghost" hidden>Réinitialiser</button>
+    <div class="login-panel">
+      <form id="loginForm" class="login-form" novalidate>
+        <h2>Se connecter</h2>
+        <p class="login-sub">Accès réservé aux valideurs RCC habilités.</p>
+
+        <div class="field-group">
+          <label for="loginUser">Identifiant</label>
+          <input id="loginUser" name="username" type="email" autocomplete="username"
+                 required aria-describedby="loginError" placeholder="prenom.nom@wafabail.ma" />
         </div>
 
-        <p id="errorBanner" class="error-banner" hidden></p>
+        <div class="field-group">
+          <label for="loginPwd">Mot de passe</label>
+          <input id="loginPwd" name="password" type="password" autocomplete="current-password"
+                 required aria-describedby="loginError" />
+        </div>
+
+        <p id="loginError" class="form-error" role="alert" hidden></p>
+
+        <button id="loginSubmit" type="submit" class="btn btn-primary btn-block">
+          <span class="btn-label">Se connecter</span>
+          <span class="btn-spinner" aria-hidden="true"></span>
+        </button>
+
+        <p class="login-note">
+          Toute action de validation est horodatée et tracée au nom de
+          l'utilisateur connecté.
+        </p>
+      </form>
+    </div>
+  </div>
+
+  <!-- ================= Application ================= -->
+  <div id="screenApp" class="app" hidden>
+    <!-- Rail de navigation -->
+    <nav class="rail" aria-label="Navigation principale">
+      <div class="rail-logo" aria-hidden="true">W</div>
+      <div class="rail-sep" aria-hidden="true"></div>
+
+      <button class="rail-btn" data-nav="list" type="button" aria-current="page">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+        <span class="rail-label">Dossiers</span>
+        <span class="rail-tip" role="tooltip">Dossiers RCC</span>
+      </button>
+
+      <button class="rail-btn" data-nav="detail" type="button" disabled
+              data-disabled-reason="Ouvrez un dossier depuis la file de validation">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l2 2 4-4"/><path d="M5 3h14a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/></svg>
+        <span class="rail-label">Validation</span>
+        <span class="rail-tip" role="tooltip">Ouvrez un dossier depuis la file</span>
+      </button>
+
+      <button class="rail-btn" data-nav="import" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        <span class="rail-label">Import</span>
+        <span class="rail-tip" role="tooltip">Import &amp; extraction OCR</span>
+      </button>
+
+      <button class="rail-btn" data-nav="audit" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
+        <span class="rail-label">Audit</span>
+        <span class="rail-tip" role="tooltip">Historique &amp; piste d'audit</span>
+      </button>
+
+      <button id="userBtn" class="rail-user" type="button" aria-haspopup="menu" aria-expanded="false">
+        <span id="userInitials">··</span>
+        <span class="rail-tip" role="tooltip"><span id="userTip">Session</span></span>
+      </button>
+      <div id="userMenu" class="user-menu" role="menu" hidden>
+        <p class="user-menu-name" id="userMenuName"></p>
+        <p class="user-menu-role">Valideur RCC</p>
+        <button type="button" role="menuitem" id="logoutBtn" class="user-menu-item">Se déconnecter</button>
+      </div>
+    </nav>
+
+    <main class="main" id="mainRegion">
+      <!-- ---------- Liste des dossiers ---------- -->
+      <section class="view" data-view="list" hidden>
+        <header class="topbar">
+          <div class="topbar-title">
+            <h1>Validation RCC · bilans OCR</h1>
+            <p>Bilans extraits par OCR en attente de contrôle humain avant enrichissement du modèle EKIP.</p>
+          </div>
+          <div class="topbar-actions">
+            <button type="button" class="btn btn-ghost" data-nav="import">Importer une liasse</button>
+          </div>
+        </header>
+
+        <div class="scroll" data-scroll="list">
+          <div class="wrap">
+            <div class="stats" id="listStats"></div>
+
+            <div class="panel">
+              <div class="table-toolbar">
+                <div class="segmented" role="tablist" aria-label="Filtrer par statut" id="listFilters"></div>
+
+                <div class="search">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                  <label class="sr-only" for="listSearch">Rechercher un dossier</label>
+                  <input id="listSearch" type="search" placeholder="N° de dossier, raison sociale ou ICE…"
+                         autocomplete="off" />
+                  <span class="search-spinner" id="listSearchBusy" hidden aria-hidden="true"></span>
+                </div>
+
+                <span class="table-count" id="listCount" aria-live="polite"></span>
+              </div>
+
+              <div class="table-scroll" id="listTableScroll">
+                <div class="table" role="table" aria-label="Dossiers RCC">
+                  <div class="tr th" role="row">
+                    <span role="columnheader" class="c-id">N° de dossier</span>
+                    <span role="columnheader" class="c-name">Client / Raison sociale</span>
+                    <span role="columnheader" class="c-date">Date d'exercice</span>
+                    <span role="columnheader" class="c-amount">Crédit demandé</span>
+                    <span role="columnheader" class="c-status">Statut du dossier</span>
+                    <span role="columnheader" class="c-actions">Actions</span>
+                  </div>
+                  <div id="listRows" role="rowgroup"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
 
-      <!-- Progression / résultats -->
-      <section class="card results-card">
-        <div id="stateIdle" class="state-panel">
-          <svg class="state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3">
-            <path d="M4 6h16M4 12h10M4 18h14" stroke-linecap="round"/>
-            <rect x="14" y="10" width="6" height="8" rx="1"/>
-          </svg>
-          <p>Les postes bilanciels RCC apparaîtront ici</p>
+      <!-- ---------- Détail / validation ---------- -->
+      <section class="view view-detail" data-view="detail" hidden>
+        <header class="topbar topbar-detail" id="detailBar"></header>
+        <div class="split" id="detailSplit">
+          <div class="split-viewer" id="viewerPane"></div>
+          <button type="button" class="split-toggle" id="splitToggle" hidden>
+            <span class="split-toggle-label">Voir le formulaire</span>
+          </button>
+          <div class="split-form scroll" id="formPane" data-scroll="detail"></div>
         </div>
+      </section>
 
-        <div id="stateLoading" class="state-panel state-loading" hidden>
-          <div class="spinner"></div>
-          <p id="loadingText">Extraction en cours…</p>
-          <p id="loadingHint" class="state-hint">Création du job…</p>
-
-          <div class="progress-wrap">
-            <div class="progress-bar" id="progressBar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-              <div class="progress-fill" id="progressFill"></div>
-            </div>
-            <div class="progress-meta">
-              <span id="progressPct">0 %</span>
-              <span id="progressPage">—</span>
-            </div>
+      <!-- ---------- Import ---------- -->
+      <section class="view" data-view="import" hidden>
+        <header class="topbar">
+          <div class="topbar-title">
+            <h1>Import &amp; extraction OCR</h1>
+            <p>Dépôt des liasses fiscales et suivi de l'extraction des postes RCC.</p>
           </div>
+        </header>
+        <div class="scroll" data-scroll="import">
+          <div class="wrap wrap-narrow" id="importPane"></div>
         </div>
+      </section>
 
-        <div id="stateResult" class="result-grid" hidden>
-          <div class="result-header">
-            <h2>Postes RCC</h2>
-            <div class="meta">
-              <span id="companyBadge" class="badge" hidden></span>
-              <span id="completenessBadge" class="badge"></span>
-              <span id="modelBadge" class="badge badge-muted"></span>
-            </div>
+      <!-- ---------- Audit ---------- -->
+      <section class="view" data-view="audit" hidden>
+        <header class="topbar">
+          <div class="topbar-title">
+            <h1>Historique &amp; piste d'audit</h1>
+            <p>Toute correction, validation ou rejet est horodatée et nominative.</p>
           </div>
-
-          <p id="docMeta" class="doc-meta" hidden></p>
-          <p id="warningBanner" class="warning-banner" hidden></p>
-
-          <div id="fieldsContainer" class="fields rcc-fields"></div>
-
-          <div class="result-actions">
-            <button id="copyJsonBtn" class="btn btn-ghost btn-small">Copier en JSON</button>
+          <div class="topbar-actions">
+            <button type="button" class="btn btn-ghost" id="auditExport">Exporter le journal (CSV)</button>
           </div>
+        </header>
+        <div class="scroll" data-scroll="audit" id="auditScroll">
+          <div class="wrap" id="auditPane"></div>
         </div>
       </section>
     </main>
 
-    <footer class="footer">
-      API <code>/api/v1/rcc/jobs</code> · Documentation
-      <a href="/docs">/docs</a>
-    </footer>
+    <!-- Barre de navigation mobile -->
+    <nav class="tabbar" aria-label="Navigation">
+      <button class="tabbar-btn" data-nav="list" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+        Dossiers
+      </button>
+      <button class="tabbar-btn" data-nav="detail" type="button" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l2 2 4-4"/><path d="M5 3h14a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/></svg>
+        Validation
+      </button>
+      <button class="tabbar-btn" data-nav="import" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        Import
+      </button>
+      <button class="tabbar-btn" data-nav="audit" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
+        Audit
+      </button>
+    </nav>
   </div>
 
-  <script src="/app.js"></script>
+  <!-- Conteneur des modales -->
+  <div id="modalRoot"></div>
+
+  <script type="module" src="/app.js"></script>
 </body>
 </html>

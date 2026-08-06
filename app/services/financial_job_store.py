@@ -93,16 +93,28 @@ class FinancialJobStore:
             return job
 
     def emit(self, job_id: str, event_type: str, data: dict[str, Any] | None = None) -> None:
-        event = {
-            "event": event_type,
-            "job_id": job_id,
-            "ts": time.time(),
-            **(data or {}),
-        }
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
                 return
+            # Chaque évènement transporte l'état d'avancement courant : un client
+            # SSE peut piloter sa barre de progression sans requête annexe.
+            event = {
+                "event": event_type,
+                "job_id": job_id,
+                "ts": time.time(),
+                "status": job.status,
+                "progress_pct": job.progress_pct,
+                "current_step": job.current_step,
+                "current_page": job.current_page,
+                "pages_total": job.pages_total,
+                "pages_financial": job.pages_financial,
+                "pages_skipped": job.pages_skipped,
+                "pages_failed": job.pages_failed,
+                "message": job.message,
+                "error": job.error,
+                **(data or {}),
+            }
             job.events.append(event)
             job.updated_at = time.time()
             subscribers = list(job.subscribers)

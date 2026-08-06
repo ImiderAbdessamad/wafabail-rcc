@@ -849,6 +849,7 @@ async def analyze_financial_document(
         ),
         dataset=dataset,
         warnings=warnings,
+        accounting_checks=accounting_checks,
     )
     if include_markdown and markdown_pages:
         result.warnings.append(

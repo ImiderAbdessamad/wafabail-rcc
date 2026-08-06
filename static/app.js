@@ -1,425 +1,270 @@
-/* UI Wafabail RCC — upload PDF, job SSE, affichage des 20 postes EKIP */
+/*
+ * Validation RCC — point d'entrée.
+ * Coque applicative : session, routage par hash, montage des écrans.
+ */
 
-(function () {
-  "use strict";
+import * as api from "./js/api.js";
+import { $, $$, announce, initials, schedule, toast } from "./js/util.js";
+import { createListView } from "./js/views/list.js";
+import { createDetailView } from "./js/views/detail.js";
+import { createImportView } from "./js/views/import.js";
+import { createAuditView } from "./js/views/audit.js";
 
-  const API_JOBS = "/api/v1/rcc/jobs";
-  const MAX_BYTES = 50 * 1024 * 1024;
+const VIEWS = ["list", "detail", "import", "audit"];
 
-  const dropzone = document.getElementById("dropzone");
-  const dropzoneEmpty = document.getElementById("dropzoneEmpty");
-  const previewFile = document.getElementById("previewFile");
-  const previewFileName = document.getElementById("previewFileName");
-  const previewFileSize = document.getElementById("previewFileSize");
-  const fileInput = document.getElementById("fileInput");
-  const removeFile = document.getElementById("removeFile");
-  const analyzeBtn = document.getElementById("analyzeBtn");
-  const analyzeBtnLabel = document.getElementById("analyzeBtnLabel");
-  const resetBtn = document.getElementById("resetBtn");
-  const errorBanner = document.getElementById("errorBanner");
-  const warningBanner = document.getElementById("warningBanner");
+const screenLogin = $("#screenLogin");
+const screenApp = $("#screenApp");
+const mainRegion = $("#mainRegion");
 
-  const stateIdle = document.getElementById("stateIdle");
-  const stateLoading = document.getElementById("stateLoading");
-  const stateResult = document.getElementById("stateResult");
-  const loadingText = document.getElementById("loadingText");
-  const loadingHint = document.getElementById("loadingHint");
-  const progressFill = document.getElementById("progressFill");
-  const progressBar = document.getElementById("progressBar");
-  const progressPct = document.getElementById("progressPct");
-  const progressPage = document.getElementById("progressPage");
+let currentUser = null;
+let currentView = null;
+let views = null;
 
-  const fieldsContainer = document.getElementById("fieldsContainer");
-  const companyBadge = document.getElementById("companyBadge");
-  const completenessBadge = document.getElementById("completenessBadge");
-  const modelBadge = document.getElementById("modelBadge");
-  const docMeta = document.getElementById("docMeta");
-  const copyJsonBtn = document.getElementById("copyJsonBtn");
+/* ============================================================== routage === */
 
-  let selectedFile = null;
-  let lastResult = null;
-  let eventSource = null;
-  let analyzing = false;
+function parseHash() {
+  const raw = (location.hash || "").replace(/^#\/?/, "");
+  const [name, param] = raw.split("/");
+  if (!VIEWS.includes(name)) return { name: "list", param: null };
+  return { name, param: param ? decodeURIComponent(param) : null };
+}
 
-  function showError(message) {
-    errorBanner.textContent = message;
-    errorBanner.hidden = false;
+function setHash(view, param) {
+  const next = `#/${view}${param ? `/${encodeURIComponent(param)}` : ""}`;
+  if (location.hash !== next) location.hash = next;
+  else handleRoute();
+}
+
+function setActiveNav(view) {
+  for (const button of $$("[data-nav]")) {
+    const isActive = button.dataset.nav === view;
+    if (isActive) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  }
+}
+
+function showView(name) {
+  for (const section of $$(".view")) {
+    const isTarget = section.dataset.view === name;
+    section.hidden = !isTarget;
+    section.classList.toggle("is-entering", isTarget);
+  }
+  setActiveNav(name);
+  currentView = name;
+}
+
+async function handleRoute() {
+  if (!currentUser) return;
+  const { name, param } = parseHash();
+
+  // On quitte le détail : les saisies en attente partent au serveur.
+  if (currentView === "detail" && name !== "detail") views.detail.flushPending();
+  if (currentView === "import" && name !== "import") views.import.hide();
+
+  if (name === "detail" && !param) {
+    setHash("list");
+    return;
   }
 
-  function clearError() {
-    errorBanner.hidden = true;
-    errorBanner.textContent = "";
+  showView(name);
+
+  switch (name) {
+    case "list":
+      await views.list.show();
+      break;
+    case "detail":
+      enableDetailNav(true);
+      await views.detail.open(param);
+      views.list.setActive(param);
+      break;
+    case "import":
+      views.import.show();
+      break;
+    case "audit":
+      await views.audit.show();
+      break;
+  }
+  announce(`Écran ${name} affiché.`);
+  mainRegion.scrollTop = 0;
+}
+
+function enableDetailNav(enabled) {
+  for (const button of $$('[data-nav="detail"]')) {
+    button.disabled = !enabled;
+    if (enabled) button.removeAttribute("data-disabled-reason");
+  }
+}
+
+/* ============================================================== session === */
+
+function showLogin({ message } = {}) {
+  currentUser = null;
+  screenApp.hidden = true;
+  screenLogin.hidden = false;
+  document.title = "Connexion — Validation RCC";
+  if (message) {
+    const errorNode = $("#loginError");
+    errorNode.textContent = message;
+    errorNode.hidden = false;
+  }
+  schedule(() => $("#loginUser").focus());
+}
+
+async function showApp(user) {
+  currentUser = user;
+  screenLogin.hidden = true;
+  screenApp.hidden = false;
+  document.title = "Validation RCC — Wafabail";
+
+  $("#userInitials").textContent = user.initials || initials(user.display_name);
+  $("#userTip").textContent = `${user.display_name} — valideur RCC`;
+  $("#userMenuName").textContent = user.display_name;
+
+  if (!views) views = buildViews();
+  if (!location.hash) setHash("list");
+  else await handleRoute();
+}
+
+function buildViews() {
+  const list = createListView({
+    onOpenDossier: (id) => setHash("detail", id),
+    onNavigate: (view) => setHash(view),
+  });
+
+  const detail = createDetailView({
+    onBack: () => setHash("list"),
+    onDossierChanged: (dossier) => list.patchLocal(dossier),
+  });
+
+  const importView = createImportView({
+    onOpenDossier: (id) => setHash("detail", id),
+    onDossierCreated: () => list.refresh(),
+  });
+
+  const audit = createAuditView({
+    onOpenDossier: (id) => setHash("detail", id),
+  });
+
+  return { list, detail, import: importView, audit };
+}
+
+/* ========================================================== connexion === */
+
+const loginForm = $("#loginForm");
+const loginSubmit = $("#loginSubmit");
+const loginError = $("#loginError");
+
+loginForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const username = $("#loginUser").value.trim();
+  const password = $("#loginPwd").value;
+
+  loginError.hidden = true;
+  $("#loginUser").removeAttribute("aria-invalid");
+  $("#loginPwd").removeAttribute("aria-invalid");
+
+  if (!username || !password) {
+    loginError.textContent = "Renseignez votre identifiant et votre mot de passe.";
+    loginError.hidden = false;
+    (username ? $("#loginPwd") : $("#loginUser")).setAttribute("aria-invalid", "true");
+    (username ? $("#loginPwd") : $("#loginUser")).focus();
+    return;
   }
 
-  function setResultState(state) {
-    stateIdle.hidden = state !== "idle";
-    stateLoading.hidden = state !== "loading";
-    stateResult.hidden = state !== "result";
+  loginSubmit.classList.add("is-busy");
+  loginSubmit.disabled = true;
+  try {
+    const user = await api.auth.login(username, password);
+    $("#loginPwd").value = "";
+    await showApp(user);
+    toast(`Bienvenue, ${user.display_name}.`, { title: "Connecté", type: "ok", timeout: 3600 });
+  } catch (error) {
+    loginError.textContent = error.message;
+    loginError.hidden = false;
+    $("#loginPwd").setAttribute("aria-invalid", "true");
+    $("#loginPwd").focus();
+  } finally {
+    loginSubmit.classList.remove("is-busy");
+    loginSubmit.disabled = false;
   }
+});
 
-  function formatFileSize(bytes) {
-    if (bytes < 1024) return `${bytes} o`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} Ko`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} Mo`;
+/* ============================================================ menu user === */
+
+const userBtn = $("#userBtn");
+const userMenu = $("#userMenu");
+
+function closeUserMenu() {
+  userMenu.hidden = true;
+  userBtn.setAttribute("aria-expanded", "false");
+}
+
+userBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const open = userMenu.hidden;
+  userMenu.hidden = !open;
+  userBtn.setAttribute("aria-expanded", String(open));
+  if (open) $("#logoutBtn").focus();
+});
+
+document.addEventListener("click", (event) => {
+  if (!userMenu.hidden && !userMenu.contains(event.target)) closeUserMenu();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !userMenu.hidden) {
+    closeUserMenu();
+    userBtn.focus();
   }
+});
 
-  function formatAmount(value) {
-    if (value == null || value === "") return "—";
-    try {
-      return new Intl.NumberFormat("fr-FR", {
-        maximumFractionDigits: 2,
-      }).format(Number(value));
-    } catch {
-      return String(value);
-    }
-  }
+$("#logoutBtn").addEventListener("click", async () => {
+  closeUserMenu();
+  try { await api.auth.logout(); } catch { /* la session est de toute façon abandonnée */ }
+  views?.import.hide();
+  views?.detail.destroy();
+  location.hash = "";
+  showLogin();
+  toast("Vous êtes déconnecté.", { title: "Session close", type: "info", timeout: 3000 });
+});
 
-  function statusClass(status) {
-    const s = (status || "missing").toLowerCase();
-    if (s === "confirmed" || s === "derived") return "status-ok";
-    if (s === "ambiguous") return "status-warn";
-    if (s === "conflicting" || s === "invalid") return "status-bad";
-    return "status-miss";
-  }
+/* ========================================================== navigation === */
 
-  function statusLabel(status) {
-    const map = {
-      confirmed: "confirmé",
-      derived: "dérivé",
-      ambiguous: "ambigu",
-      conflicting: "conflit",
-      invalid: "invalide",
-      missing: "manquant",
-    };
-    return map[(status || "").toLowerCase()] || status || "—";
-  }
-
-  function closeStream() {
-    if (eventSource) {
-      eventSource.close();
-      eventSource = null;
-    }
-  }
-
-  function setAnalyzing(active) {
-    analyzing = active;
-    analyzeBtn.disabled = active || !selectedFile;
-    analyzeBtnLabel.textContent = active
-      ? "Extraction en cours…"
-      : "Extraire les champs RCC";
-    resetBtn.hidden = !active && !lastResult && !selectedFile;
-  }
-
-  function updateProgress(payload) {
-    const pct = Math.max(0, Math.min(100, Number(payload.progress_pct || 0)));
-    progressFill.style.width = `${pct}%`;
-    progressBar.setAttribute("aria-valuenow", String(pct));
-    progressPct.textContent = `${pct} %`;
-    loadingHint.textContent = payload.message || payload.current_step || "…";
-    if (payload.current_page && payload.pages_total) {
-      progressPage.textContent = `Page ${payload.current_page} / ${payload.pages_total}`;
-    } else if (payload.pages_total) {
-      progressPage.textContent = `${payload.pages_total} page(s)`;
-    } else {
-      progressPage.textContent = "—";
-    }
-  }
-
-  function resetAll() {
-    closeStream();
-    selectedFile = null;
-    lastResult = null;
-    analyzing = false;
-    fileInput.value = "";
-    previewFile.hidden = true;
-    dropzoneEmpty.hidden = false;
-    removeFile.hidden = true;
-    analyzeBtn.disabled = true;
-    analyzeBtnLabel.textContent = "Extraire les champs RCC";
-    resetBtn.hidden = true;
-    clearError();
-    warningBanner.hidden = true;
-    fieldsContainer.innerHTML = "";
-    companyBadge.hidden = true;
-    docMeta.hidden = true;
-    progressFill.style.width = "0%";
-    setResultState("idle");
-  }
-
-  function handleFile(file) {
-    clearError();
-    if (!file) return;
-
-    const name = (file.name || "").toLowerCase();
-    if (!name.endsWith(".pdf") && file.type !== "application/pdf") {
-      showError("Seuls les fichiers PDF sont acceptés.");
+for (const button of $$("[data-nav]")) {
+  button.addEventListener("click", () => {
+    if (button.disabled) return;
+    const target = button.dataset.nav;
+    if (target === "detail") {
+      const id = views?.detail.currentId;
+      if (id) setHash("detail", id);
       return;
     }
-    if (file.size > MAX_BYTES) {
-      showError(`Fichier trop volumineux (max ${formatFileSize(MAX_BYTES)}).`);
-      return;
-    }
+    setHash(target);
+  });
+}
 
-    selectedFile = file;
-    dropzoneEmpty.hidden = true;
-    previewFileName.textContent = file.name;
-    previewFileSize.textContent = formatFileSize(file.size);
-    previewFile.hidden = false;
-    removeFile.hidden = false;
-    analyzeBtn.disabled = false;
-    resetBtn.hidden = false;
+window.addEventListener("hashchange", handleRoute);
+
+// Enregistre les corrections en attente si l'onglet se ferme.
+window.addEventListener("beforeunload", () => views?.detail.flushPending());
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") views?.detail.flushPending();
+});
+
+/* ============================================================== amorçage === */
+
+api.setUnauthorizedHandler(() => {
+  if (!currentUser) return;
+  currentUser = null;
+  views?.import.hide();
+  views?.detail.destroy();
+  showLogin({ message: "Votre session a expiré. Reconnectez-vous pour continuer." });
+});
+
+(async function bootstrap() {
+  try {
+    const user = await api.auth.me();
+    await showApp(user);
+  } catch {
+    showLogin();
   }
-
-  function renderResult(result) {
-    lastResult = result;
-    fieldsContainer.innerHTML = "";
-
-    const company = result.document?.company?.raison_sociale;
-    if (company) {
-      companyBadge.textContent = company;
-      companyBadge.hidden = false;
-    } else {
-      companyBadge.hidden = true;
-    }
-
-    const pct = result.completeness_pct ?? 0;
-    completenessBadge.textContent = `Complétude ${pct} %`;
-    modelBadge.textContent = result.extraction?.model
-      ? result.extraction.model.split("/").pop()
-      : "GLM";
-
-    const doc = result.document || {};
-    const exercise = doc.exercise?.label || doc.exercise?.fin || "";
-    const parts = [
-      doc.filename,
-      exercise ? `Exercice ${exercise}` : null,
-      `${doc.pages_processed || 0}/${doc.pages_total || 0} pages`,
-    ].filter(Boolean);
-    docMeta.textContent = parts.join(" · ");
-    docMeta.hidden = parts.length === 0;
-
-    const warnings = result.warnings || [];
-    if (warnings.length) {
-      warningBanner.textContent = warnings.slice(0, 4).join(" · ");
-      warningBanner.hidden = false;
-    } else {
-      warningBanner.hidden = true;
-    }
-
-    (result.fields || []).forEach((field) => {
-      const el = document.createElement("div");
-      el.className = `field ${statusClass(field.status)}`;
-      if (field.code === "TYPE_RESULTAT") {
-        el.classList.add("field-wide");
-      }
-
-      const displayValue =
-        field.code === "TYPE_RESULTAT"
-          ? field.note || "—"
-          : formatAmount(field.value);
-
-      el.innerHTML = `
-        <div class="field-top">
-          <span class="field-label">${field.number}. ${escapeHtml(field.label)}</span>
-          <span class="field-status">${escapeHtml(statusLabel(field.status))}</span>
-        </div>
-        <span class="field-value field-mono">${escapeHtml(displayValue)}</span>
-        ${
-          field.note && field.code !== "TYPE_RESULTAT"
-            ? `<span class="field-note">${escapeHtml(field.note)}</span>`
-            : ""
-        }
-      `;
-      fieldsContainer.appendChild(el);
-    });
-
-    setResultState("result");
-    setAnalyzing(false);
-    resetBtn.hidden = false;
-  }
-
-  function escapeHtml(str) {
-    return String(str)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
-
-  async function fetchResult(jobId) {
-    const res = await fetch(`${API_JOBS}/${jobId}/result`);
-    if (!res.ok) {
-      const detail = await res.json().catch(() => ({}));
-      throw new Error(detail.detail || `Erreur HTTP ${res.status}`);
-    }
-    return res.json();
-  }
-
-  function listenJob(jobId, streamUrl) {
-    closeStream();
-    const url = streamUrl || `${API_JOBS}/${jobId}/stream`;
-    eventSource = new EventSource(url);
-
-    const onProgress = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        updateProgress(data);
-      } catch {
-        /* ignore */
-      }
-    };
-
-    eventSource.addEventListener("job_status", onProgress);
-    eventSource.addEventListener("page_extracted", onProgress);
-    eventSource.addEventListener("page_skipped", onProgress);
-    eventSource.addEventListener("page_failed", onProgress);
-    eventSource.addEventListener("resolving_fields", onProgress);
-    eventSource.addEventListener("running_controls", onProgress);
-    eventSource.onmessage = onProgress;
-
-    eventSource.addEventListener("result_ready", async () => {
-      closeStream();
-      loadingText.textContent = "Finalisation…";
-      try {
-        const result = await fetchResult(jobId);
-        renderResult(result);
-      } catch (err) {
-        showError(err.message || "Impossible de récupérer le résultat.");
-        setAnalyzing(false);
-        setResultState("idle");
-      }
-    });
-
-    eventSource.addEventListener("job_failed", (event) => {
-      closeStream();
-      let message = "Le job a échoué.";
-      try {
-        const data = JSON.parse(event.data);
-        message = data.error || data.message || message;
-      } catch {
-        /* ignore */
-      }
-      showError(message);
-      setAnalyzing(false);
-      setResultState("idle");
-    });
-
-    eventSource.onerror = () => {
-      // EventSource se reconnecte ; on poll le statut si fermé
-      if (!eventSource || eventSource.readyState === EventSource.CLOSED) {
-        pollUntilDone(jobId);
-      }
-    };
-  }
-
-  async function pollUntilDone(jobId) {
-    closeStream();
-    for (let i = 0; i < 120 && analyzing; i += 1) {
-      try {
-        const res = await fetch(`${API_JOBS}/${jobId}`);
-        if (!res.ok) break;
-        const progress = await res.json();
-        updateProgress(progress);
-        if (progress.status === "completed") {
-          const result = await fetchResult(jobId);
-          renderResult(result);
-          return;
-        }
-        if (progress.status === "failed") {
-          showError(progress.error || "Le job a échoué.");
-          setAnalyzing(false);
-          setResultState("idle");
-          return;
-        }
-      } catch {
-        /* retry */
-      }
-      await new Promise((r) => setTimeout(r, 2000));
-    }
-  }
-
-  async function startExtraction() {
-    if (!selectedFile || analyzing) return;
-    clearError();
-    setAnalyzing(true);
-    setResultState("loading");
-    loadingText.textContent = "Extraction en cours…";
-    updateProgress({ progress_pct: 2, message: "Création du job…", pages_total: null });
-
-    const form = new FormData();
-    form.append("file", selectedFile);
-
-    try {
-      const res = await fetch(API_JOBS, { method: "POST", body: form });
-      if (!res.ok) {
-        const detail = await res.json().catch(() => ({}));
-        throw new Error(
-          typeof detail.detail === "string"
-            ? detail.detail
-            : `Erreur HTTP ${res.status}`
-        );
-      }
-      const data = await res.json();
-      listenJob(data.job_id, data.stream_url);
-    } catch (err) {
-      showError(err.message || "Échec de la création du job.");
-      setAnalyzing(false);
-      setResultState("idle");
-    }
-  }
-
-  // --- Events ---
-  dropzone.addEventListener("click", () => {
-    if (!analyzing) fileInput.click();
-  });
-  dropzone.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      if (!analyzing) fileInput.click();
-    }
-  });
-  fileInput.addEventListener("change", () => {
-    if (fileInput.files?.[0]) handleFile(fileInput.files[0]);
-  });
-
-  ["dragenter", "dragover"].forEach((evt) => {
-    dropzone.addEventListener(evt, (e) => {
-      e.preventDefault();
-      dropzone.classList.add("drag-active");
-    });
-  });
-  ["dragleave", "drop"].forEach((evt) => {
-    dropzone.addEventListener(evt, (e) => {
-      e.preventDefault();
-      dropzone.classList.remove("drag-active");
-    });
-  });
-  dropzone.addEventListener("drop", (e) => {
-    const file = e.dataTransfer?.files?.[0];
-    if (file) handleFile(file);
-  });
-
-  removeFile.addEventListener("click", (e) => {
-    e.stopPropagation();
-    if (!analyzing) resetAll();
-  });
-  analyzeBtn.addEventListener("click", startExtraction);
-  resetBtn.addEventListener("click", resetAll);
-
-  copyJsonBtn.addEventListener("click", async () => {
-    if (!lastResult) return;
-    const flat = {};
-    (lastResult.fields || []).forEach((f) => {
-      flat[f.code] = f.code === "TYPE_RESULTAT" ? f.note : f.value;
-    });
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(flat, null, 2));
-      copyJsonBtn.textContent = "Copié !";
-      setTimeout(() => {
-        copyJsonBtn.textContent = "Copier en JSON";
-      }, 1600);
-    } catch {
-      showError("Impossible de copier dans le presse-papiers.");
-    }
-  });
 })();

@@ -4,6 +4,10 @@ __pycache__/
 .Python
 
 .env
+data/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 .venv/
 venv/
 env/

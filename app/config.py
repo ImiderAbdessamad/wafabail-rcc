@@ -53,3 +53,24 @@ DIRECT_FINANCIAL_JOB_TTL_MINUTES = int(
 DIRECT_FINANCIAL_CLASSIFY_DPI = int(os.getenv("DIRECT_FINANCIAL_CLASSIFY_DPI", "72"))
 
 STATIC_DIR = BASE_DIR / "static"
+
+# --- Persistance (dossiers RCC, corrections analystes, sessions) -------------
+DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR / "data")))
+DB_PATH = os.getenv("DB_PATH", str(DATA_DIR / "wafabail_rcc.sqlite3"))
+PDF_STORAGE_DIR = Path(os.getenv("PDF_STORAGE_DIR", str(DATA_DIR / "pdfs")))
+
+# --- Authentification analyste (rôle unique) --------------------------------
+# Un seul rôle « valideur RCC » à ce stade — pas de RBAC.
+ANALYST_USERNAME = os.getenv("ANALYST_USERNAME", "analyste@wafabail.ma")
+ANALYST_PASSWORD = os.getenv("ANALYST_PASSWORD", "wafabail2026")
+ANALYST_DISPLAY_NAME = os.getenv("ANALYST_DISPLAY_NAME", "Analyste RCC")
+SESSION_COOKIE_NAME = os.getenv("SESSION_COOKIE_NAME", "wb_rcc_session")
+SESSION_TTL_HOURS = int(os.getenv("SESSION_TTL_HOURS", "12"))
+SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
+# Seuil de confiance sous lequel un champ est signalé « à vérifier ».
+CONFIDENCE_REVIEW_THRESHOLD = float(os.getenv("CONFIDENCE_REVIEW_THRESHOLD", "0.8"))

@@ -8,8 +8,39 @@ from app.schemas.direct_financial_extraction import (
     DocumentSummary,
     ExtractionSummary,
 )
-from app.schemas.financial_analysis import FinancialDataset, FinancialValue
-from app.schemas.rcc import RCC_ELEMENTS, RccAnalysisResult, RccField
+from app.schemas.financial_analysis import (
+    AccountingControlResult,
+    FinancialDataset,
+    FinancialValue,
+)
+from app.schemas.rcc import (
+    RCC_ELEMENTS,
+    AccountingControlView,
+    FieldEvidence,
+    RccAnalysisResult,
+    RccField,
+)
+
+# Libellés métier des contrôles de app.services.financial_controls
+CONTROL_LABELS: dict[str, str] = {
+    "bilan_equilibre": "Total Actif = Total Passif",
+    "tresorerie_nette": "Trésorerie nette = trésorerie actif − trésorerie passif",
+    "resultat_exploitation": "Produits d'exploitation − charges = résultat d'exploitation",
+    "resultat_financier": "Produits financiers − charges financières = résultat financier",
+    "resultat_courant": "Résultat exploitation + financier = résultat courant",
+    "resultat_non_courant": "Produits non courants − charges = résultat non courant",
+    "resultat_avant_impot": "Résultat courant + non courant = résultat avant impôt",
+    "resultat_net": "Résultat avant impôt − IS = résultat net",
+}
+
+# Postes RCC pour lesquels le pipeline extrait réellement un exercice N-1.
+# Aucune dérivation : si l'attribut est absent ou inutilisable, pas de N-1.
+_N1_ATTRS: dict[str, str] = {
+    "CHIFFRE_AFFAIRES": "chiffre_affaires_n1",
+    "RESULTAT_NET": "resultat_net_n1",
+    "TOTAL_BILAN": "total_bilan_n1",
+    "DETTES_BANCAIRES_MLT": "dettes_financieres_n1",
+}
 
 
 def _decimal_to_float(value: Decimal | None) -> float | None:
@@ -31,8 +62,12 @@ def _usable(fv: FinancialValue | None) -> bool:
 def _pick(
     dataset: FinancialDataset,
     *attrs: str,
-) -> tuple[float | None, str, float]:
-    """Retourne (value, status, confidence) depuis le premier attr utilisable."""
+) -> tuple[float | None, str, float, FinancialValue | None]:
+    """Retourne (value, status, confidence, source) depuis le 1ᵉʳ attr utilisable.
+
+    La `FinancialValue` retenue est renvoyée telle quelle pour que l'appelant
+    puisse en extraire la provenance (panneau « Zones extraites »).
+    """
     for attr in attrs:
         fv = _fv(dataset, attr)
         if _usable(fv):
@@ -45,10 +80,76 @@ def _pick(
                 conf = 0.85
             elif conf == 0.0 and fv and fv.status == "confirmed":
                 conf = 0.9
-            return _decimal_to_float(fv.value if fv else None), fv.status if fv else "missing", conf
+            return (
+                _decimal_to_float(fv.value if fv else None),
+                fv.status if fv else "missing",
+                conf,
+                fv,
+            )
         if fv is not None and fv.status in {"conflicting", "invalid"}:
-            return None, fv.status, 0.0
-    return None, "missing", 0.0
+            # Champ invalidé par un contrôle comptable : on garde la provenance
+            # pour que l'analyste voie d'où venait la valeur rejetée.
+            return None, fv.status, 0.0, fv
+    return None, "missing", 0.0, None
+
+
+def _evidence(fv: FinancialValue | None, *, limit: int = 6) -> list[FieldEvidence]:
+    """Provenance → évidences API (dédupliquées, les plus sûres d'abord)."""
+    if fv is None or not fv.provenance:
+        return []
+    seen: set[tuple] = set()
+    items: list[tuple[float, FieldEvidence]] = []
+    for p in fv.provenance:
+        key = (p.page_number, p.raw_label, p.raw_value, p.column_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        conf = float(p.confidence) if p.confidence is not None else 0.0
+        items.append(
+            (
+                conf,
+                FieldEvidence(
+                    page_number=p.page_number,
+                    raw_label=p.raw_label,
+                    raw_value=p.raw_value,
+                    column_name=p.column_name,
+                    page_type=p.page_type,
+                    confidence=conf or None,
+                    source_excerpt=p.source_excerpt,
+                ),
+            )
+        )
+    items.sort(key=lambda pair: pair[0], reverse=True)
+    return [ev for _, ev in items[:limit]]
+
+
+def _n1_value(dataset: FinancialDataset, code: str) -> float | None:
+    attr = _N1_ATTRS.get(code)
+    if attr is None:
+        return None
+    fv = _fv(dataset, attr)
+    if not _usable(fv):
+        return None
+    return _decimal_to_float(fv.value if fv else None)
+
+
+def _control_views(
+    checks: list[AccountingControlResult] | None,
+) -> list[AccountingControlView]:
+    return [
+        AccountingControlView(
+            code=c.code,
+            status=c.status,
+            label=CONTROL_LABELS.get(c.code, c.code),
+            expected=_decimal_to_float(c.expected),
+            observed=_decimal_to_float(c.observed),
+            difference=_decimal_to_float(c.difference),
+            tolerance=_decimal_to_float(c.tolerance),
+            affected_fields=list(c.affected_fields),
+            message=c.message,
+        )
+        for c in (checks or [])
+    ]
 
 
 def build_rcc_result(
@@ -57,9 +158,12 @@ def build_rcc_result(
     extraction: ExtractionSummary,
     dataset: FinancialDataset,
     warnings: list[str] | None = None,
+    accounting_checks: list[AccountingControlResult] | None = None,
 ) -> RccAnalysisResult:
     """Construit la réponse RCC (uniquement les postes EKIP)."""
-    resolved: dict[str, tuple[float | None, str, float, str | None]] = {}
+    resolved: dict[
+        str, tuple[float | None, str, float, str | None, FinancialValue | None]
+    ] = {}
 
     # Mapping dataset → codes RCC
     mapping: dict[str, tuple[str, ...]] = {
@@ -86,7 +190,7 @@ def build_rcc_result(
     }
 
     for code, attrs in mapping.items():
-        value, status, conf = _pick(dataset, *attrs)
+        value, status, conf, source = _pick(dataset, *attrs)
         note = None
         if code == "DETTES_BANCAIRES_MLT" and value is not None:
             mlt_fv = _fv(dataset, "dettes_bancaires_mlt")
@@ -96,11 +200,13 @@ def build_rcc_result(
             ff = _fv(dataset, "frais_financiers")
             if not _usable(ff) and _usable(_fv(dataset, "charges_financieres")):
                 note = "Proxy charges financières (TOTAL V)"
-        resolved[code] = (value, status, conf, note)
+        if status == "conflicting" and not note:
+            note = "Valeur invalidée par un contrôle comptable"
+        resolved[code] = (value, status, conf, note, source)
 
     # TYPE_RESULTAT dérivé du résultat net
-    rn_val, rn_status, rn_conf, _ = resolved.get(
-        "RESULTAT_NET", (None, "missing", 0.0, None)
+    rn_val, rn_status, rn_conf, _, _ = resolved.get(
+        "RESULTAT_NET", (None, "missing", 0.0, None, None)
     )
     if rn_val is not None and rn_status in {"confirmed", "derived", "ambiguous"}:
         if rn_val > 0:
@@ -109,14 +215,16 @@ def build_rcc_result(
             type_note = "Déficitaire"
         else:
             type_note = "Nul"
-        resolved["TYPE_RESULTAT"] = (None, "derived", max(rn_conf, 0.95), type_note)
+        resolved["TYPE_RESULTAT"] = (None, "derived", max(rn_conf, 0.95), type_note, None)
     else:
-        resolved["TYPE_RESULTAT"] = (None, "missing", 0.0, None)
+        resolved["TYPE_RESULTAT"] = (None, "missing", 0.0, None, None)
 
     fields: list[RccField] = []
     found = 0
-    for num, code, label, source in RCC_ELEMENTS:
-        value, status, conf, note = resolved.get(code, (None, "missing", 0.0, None))
+    for num, code, label, source_section in RCC_ELEMENTS:
+        value, status, conf, note, fv = resolved.get(
+            code, (None, "missing", 0.0, None, None)
+        )
         if code == "TYPE_RESULTAT":
             if note:
                 found += 1
@@ -126,7 +234,7 @@ def build_rcc_result(
                     code=code,
                     label=label,
                     value=None,
-                    source=source,
+                    source=source_section,
                     status=status,
                     note=note,
                     confidence=conf,
@@ -142,10 +250,12 @@ def build_rcc_result(
                 code=code,
                 label=label,
                 value=value,
-                source=source,
+                source=source_section,
                 status=status,
                 note=note,
                 confidence=conf,
+                value_n1=_n1_value(dataset, code),
+                evidence=_evidence(fv),
             )
         )
 
@@ -156,6 +266,7 @@ def build_rcc_result(
         fields=fields,
         completeness_pct=completeness,
         warnings=list(warnings or []),
+        controls=_control_views(accounting_checks),
     )
 
 

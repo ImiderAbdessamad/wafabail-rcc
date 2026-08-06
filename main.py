@@ -18,7 +18,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import ALLOWED_ORIGINS, STATIC_DIR
-from app.routers import rcc
+from app.db import close_db, init_db
+from app.routers import auth, dossiers, rcc
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,7 +45,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router, prefix="/api/v1")
 app.include_router(rcc.router, prefix="/api/v1")
+app.include_router(dossiers.router, prefix="/api/v1")
+app.include_router(dossiers.audit_router, prefix="/api/v1")
+
+
+@app.on_event("startup")
+async def on_startup() -> None:
+    init_db()
+    logger.info("Base de données RCC initialisée.")
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    close_db()
 
 
 @app.get("/health", tags=["Système"])
