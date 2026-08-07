@@ -1,6 +1,6 @@
 /* Panneau gauche : document original, zones extraites, pièces & import. */
 
-import { useMemo } from "react";
+import { lazy, Suspense, useMemo } from "react";
 import * as api from "../../lib/api.js";
 import { CODE_ORDER } from "../../lib/fields.js";
 import { formatAmount } from "../../lib/format.js";
@@ -8,7 +8,8 @@ import Icon, { ICONS } from "../Icon.jsx";
 import ImportPanel from "../ImportPanel.jsx";
 import { Badge, EmptyState } from "../States.jsx";
 import Banner from "./Banner.jsx";
-import PdfEvidenceViewer from "./PdfEvidenceViewer.jsx";
+
+const PdfEvidenceViewer = lazy(() => import("./PdfEvidenceViewer.jsx"));
 
 const TABS = [
   { key: "doc", label: "Document original" },
@@ -73,14 +74,16 @@ function DocumentTab({ dossier, activeCode, activeEvidencePage, onFocusField }) 
 
   return (
     <div className="pane-body">
-      <PdfEvidenceViewer
-        fileUrl={fileUrl}
-        filename={dossier.filename || dossier.id}
-        fields={dossier.result?.fields ?? []}
-        activeCode={activeCode}
-        activeEvidencePage={activeEvidencePage}
-        onFocusField={onFocusField}
-      />
+      <Suspense fallback={<div className="pdf-viewer-loading"><span className="pdf-loader" aria-hidden="true" />Initialisation du lecteur PDF…</div>}>
+        <PdfEvidenceViewer
+          fileUrl={fileUrl}
+          filename={dossier.filename || dossier.id}
+          fields={dossier.result?.fields ?? []}
+          activeCode={activeCode}
+          activeEvidencePage={activeEvidencePage}
+          onFocusField={onFocusField}
+        />
+      </Suspense>
     </div>
   );
 }
@@ -88,7 +91,7 @@ function DocumentTab({ dossier, activeCode, activeEvidencePage, onFocusField }) 
 /* ------------------------------------------------------------------ zones --- */
 
 function ZonesTab({ dossier, activeCode, onFocusField }) {
-  const rows = useMemo(() => {
+  const groups = useMemo(() => {
     const out = [];
     for (const field of dossier.result?.fields ?? []) {
       for (const evidence of field.evidence ?? []) out.push({ field, evidence });
@@ -98,10 +101,17 @@ function ZonesTab({ dossier, activeCode, onFocusField }) {
         (a.evidence.page_number ?? 99) - (b.evidence.page_number ?? 99) ||
         (CODE_ORDER.get(a.field.code) ?? 999) - (CODE_ORDER.get(b.field.code) ?? 999)
     );
-    return out;
+    return out.reduce((pages, row) => {
+      const page = row.evidence.page_number || "—";
+      const current = pages.get(page) || [];
+      current.push(row);
+      pages.set(page, current);
+      return pages;
+    }, new Map());
   }, [dossier.result]);
+  const rowCount = [...groups.values()].reduce((total, rows) => total + rows.length, 0);
 
-  if (!rows.length) {
+  if (!rowCount) {
     return (
       <div className="pane-scroll">
         <EmptyState
@@ -119,37 +129,45 @@ function ZonesTab({ dossier, activeCode, onFocusField }) {
         <div className="panel-head">
           <div>
             <h2>Zones d'extraction reconnues</h2>
-            <p>Ligne du document identifiée par le moteur pour chaque poste. Cliquez pour cadrer la page.</p>
+            <p>Retrouvez chaque valeur dans sa page source, puis ouvrez-la dans le document pour la contrôler.</p>
           </div>
+          <Badge tone="neutral">{`${rowCount} zone${rowCount > 1 ? "s" : ""} · ${groups.size} page${groups.size > 1 ? "s" : ""}`}</Badge>
         </div>
 
-        {rows.map(({ field, evidence }, index) => {
-          const confidence = evidence.confidence ?? field.confidence ?? 0;
-          const dot = confidence >= 0.8 ? "var(--ok)" : confidence >= 0.6 ? "var(--warn)" : "var(--bad)";
-          const toneClass = confidence >= 0.8 ? "conf-ok" : confidence >= 0.6 ? "conf-low" : "conf-bad";
-          const meta = [
-            evidence.page_number ? `page ${evidence.page_number}` : null,
-            evidence.raw_label,
-            evidence.column_name,
-          ].filter(Boolean).join(" · ");
+        {[...groups.entries()].map(([page, rows]) => (
+          <section className="zone-page" key={page} aria-label={`Zones de la page ${page}`}>
+            <div className="zone-page-head">
+              <span>Page {page}</span>
+              <span>{`${rows.length} correspondance${rows.length > 1 ? "s" : ""}`}</span>
+            </div>
+            {rows.map(({ field, evidence }, index) => {
+              const confidence = evidence.confidence ?? field.confidence ?? 0;
+              const dot = confidence >= 0.8 ? "var(--ok)" : confidence >= 0.6 ? "var(--warn)" : "var(--bad)";
+              const toneClass = confidence >= 0.8 ? "conf-ok" : confidence >= 0.6 ? "conf-low" : "conf-bad";
+              const source = evidence.source_excerpt || evidence.raw_label || evidence.column_name || "Ligne source détectée";
 
-          return (
-            <button
-              key={`${field.code}-${index}`}
-              type="button"
-              className={`zone${activeCode === field.code ? " is-active" : ""}`}
-              onClick={() => onFocusField(field.code, { openDoc: true, pageNumber: evidence.page_number })}
-            >
-              <span className="zone-dot" style={{ background: dot }} aria-hidden="true" />
-              <span className="zone-main">
-                <span className="zone-label">{field.label}</span>
-                <span className="zone-meta" title={evidence.source_excerpt || ""}>{meta}</span>
-              </span>
-              <span className="zone-val">{evidence.raw_value || formatAmount(field.value)}</span>
-              <span className={`zone-conf ${toneClass}`}>{`${Math.round(confidence * 100)} %`}</span>
-            </button>
-          );
-        })}
+              return (
+                <button
+                  key={`${field.code}-${index}`}
+                  type="button"
+                  className={`zone${activeCode === field.code ? " is-active" : ""}`}
+                  onClick={() => onFocusField(field.code, { openDoc: true, pageNumber: evidence.page_number })}
+                >
+                  <span className="zone-dot" style={{ background: dot }} aria-hidden="true" />
+                  <span className="zone-main">
+                    <span className="zone-label">{field.label}</span>
+                    <span className="zone-meta" title={source}>{source}</span>
+                  </span>
+                  <span className="zone-measure">
+                    <span className="zone-val">{evidence.raw_value || formatAmount(field.value)}</span>
+                    <span className={`zone-conf ${toneClass}`}>{`${Math.round(confidence * 100)} % de confiance`}</span>
+                  </span>
+                  <span className="zone-open">Voir dans le PDF <Icon paths={ICONS.chevronRight} size={13} width={2} /></span>
+                </button>
+              );
+            })}
+          </section>
+        ))}
       </div>
     </div>
   );

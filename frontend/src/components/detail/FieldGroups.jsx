@@ -119,6 +119,7 @@ const FieldRow = memo(function FieldRow({
       className={`frow${isTarget ? " is-target" : ""}`}
       data-code={code}
       data-state={state}
+      data-empty={serverValue == null ? "true" : undefined}
       onMouseEnter={() => setShowTip(true)}
       onMouseLeave={() => setShowTip(false)}
     >
@@ -191,7 +192,7 @@ const FieldRow = memo(function FieldRow({
               autoComplete="off"
               value={draft}
               readOnly={locked}
-              placeholder={meta.state === "missing" ? "non lu" : ""}
+              placeholder={locked && serverValue == null ? "Indisponible" : meta.state === "missing" ? "À renseigner" : ""}
               aria-describedby={`${inputId}-conf`}
               aria-invalid={meta.state === "conflict" || meta.state === "missing" ? "true" : undefined}
               onChange={(event) => {

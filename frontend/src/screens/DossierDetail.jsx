@@ -347,47 +347,52 @@ export default function DossierDetail({ onDossierChanged }) {
         </div>
 
         <div className="detail-actions">
-          <button type="button" className="btn btn-ghost" onClick={() => onExport("excel")}>
-            <Icon paths={ICONS.file} size={14} width={1.9} />
-            Exporter Excel
-          </button>
-          <button type="button" className="btn btn-dark" onClick={() => onExport("pdf")}>
-            <Icon paths={ICONS.file} size={14} width={1.9} />
-            Rapport PDF
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost"
-            disabled={dossier.status === "escalated"}
-            onClick={() => setModal("escalate")}
-          >
-            Demander un arbitrage
-          </button>
-          <button
-            type="button"
-            className="btn btn-danger"
-            disabled={dossier.status === "rejected"}
-            onClick={() => setModal("reject")}
-          >
-            Rejeter
-          </button>
-          <button
-            type="button"
-            className={`btn ${compliance.can_validate ? "btn-ok" : "btn-ghost"} hint${busyAction === "validate" ? " is-busy" : ""}`}
-            disabled={!compliance.can_validate || dossier.status === "validated" || busyAction === "validate"}
-            data-hint={
-              dossier.status === "validated"
-                ? "Ce dossier est déjà validé"
-                : compliance.can_validate
-                  ? "Transmettre les postes RCC au modèle EKIP"
-                  : `${pluralize(compliance.blockers, "règle")} de conformité bloquante(s) à lever avant validation`
-            }
-            onClick={onValidate}
-          >
-            <Icon paths={ICONS.check} size={14} width={2.4} />
-            <span className="btn-label">Valider le dossier</span>
-            <span className="btn-spinner" aria-hidden="true" />
-          </button>
+          <div className="detail-action-group" aria-label="Exporter le dossier">
+            <button type="button" className="btn btn-ghost" onClick={() => onExport("excel")}>
+              <Icon paths={ICONS.file} size={14} width={1.9} />
+              Exporter Excel
+            </button>
+            <button type="button" className="btn btn-dark" onClick={() => onExport("pdf")}>
+              <Icon paths={ICONS.file} size={14} width={1.9} />
+              Rapport PDF
+            </button>
+          </div>
+          <span className="detail-action-divider" aria-hidden="true" />
+          <div className="detail-action-group" aria-label="Décision analyste">
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={dossier.status === "escalated"}
+              onClick={() => setModal("escalate")}
+            >
+              Demander un arbitrage
+            </button>
+            <button
+              type="button"
+              className="btn btn-danger"
+              disabled={dossier.status === "rejected"}
+              onClick={() => setModal("reject")}
+            >
+              Rejeter
+            </button>
+            <button
+              type="button"
+              className={`btn ${compliance.can_validate ? "btn-ok" : "btn-ghost"} hint${busyAction === "validate" ? " is-busy" : ""}`}
+              disabled={!compliance.can_validate || dossier.status === "validated" || busyAction === "validate"}
+              data-hint={
+                dossier.status === "validated"
+                  ? "Ce dossier est déjà validé"
+                  : compliance.can_validate
+                    ? "Transmettre les postes RCC au modèle EKIP"
+                    : `${pluralize(compliance.blockers, "règle")} de conformité bloquante(s) à lever avant validation`
+              }
+              onClick={onValidate}
+            >
+              <Icon paths={ICONS.check} size={14} width={2.4} />
+              <span className="btn-label">Valider le dossier</span>
+              <span className="btn-spinner" aria-hidden="true" />
+            </button>
+          </div>
         </div>
       </header>
 
@@ -492,20 +497,7 @@ export default function DossierDetail({ onDossierChanged }) {
 
           <ControlsPanel controls={dossier.result?.controls ?? []} />
 
-          {dossier.result?.warnings?.length ? (
-            <div className="panel panel-pad" style={{ marginTop: 14 }}>
-              <h2 style={{ fontSize: "12.5px", fontWeight: 700, marginBottom: 9 }}>
-                Avertissements d'extraction
-              </h2>
-              <ul style={{ display: "flex", flexDirection: "column", gap: 6, listStyle: "none" }}>
-                {dossier.result.warnings.map((warning) => (
-                  <li key={warning} style={{ fontSize: "11.5px", color: "var(--muted)", lineHeight: 1.5 }}>
-                    {`· ${warning}`}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
+          <ExtractionWarnings warnings={dossier.result?.warnings ?? []} />
         </div>
       </div>
 
@@ -568,10 +560,14 @@ function ControlsPanel({ controls }) {
   }
 
   return (
-    <div className="panel panel-pad">
-      <h2 style={{ fontSize: "12.5px", fontWeight: 700, marginBottom: 11 }}>
-        Contrôles de cohérence
-      </h2>
+    <section className="panel panel-pad controls-panel">
+      <div className="controls-head">
+        <div>
+          <h2>Contrôles de cohérence</h2>
+          <p>Vérifications automatiques déterminantes pour la validation.</p>
+        </div>
+        <Badge>{`${controls.filter((control) => control.status === "passed").length}/${controls.length} conformes`}</Badge>
+      </div>
       {controls.map((control) => {
         const tone = control.status === "passed" ? "conf-ok"
           : control.status === "failed" ? "conf-bad" : "conf-lock";
@@ -581,28 +577,46 @@ function ControlsPanel({ controls }) {
           : control.status === "failed" ? "Écart" : "Non testable";
 
         return (
-          <div
-            key={control.code}
-            style={{
-              display: "flex", alignItems: "center", gap: 11,
-              padding: "8px 0", borderBottom: "1px solid #F4F6F9",
-            }}
-          >
-            <span
-              style={{ width: 8, height: 8, borderRadius: "50%", background: dot, flex: "0 0 8px" }}
-              aria-hidden="true"
-            />
-            <span style={{ flex: 1, fontSize: 12, color: "var(--ink-3)" }}>{control.label}</span>
+          <div key={control.code} className="control-row">
+            <span className="control-dot" style={{ background: dot }} aria-hidden="true" />
+            <span className="control-label">{control.label}</span>
             <span className="comp-detail" title={control.message}>{control.message}</span>
-            <span
-              className={tone}
-              style={{ flex: "0 0 86px", textAlign: "right", fontSize: "11.5px", fontWeight: 700 }}
-            >
-              {verdict}
-            </span>
+            <span className={`control-verdict ${tone}`}>{verdict}</span>
           </div>
         );
       })}
-    </div>
+    </section>
   );
+}
+
+function ExtractionWarnings({ warnings }) {
+  if (!warnings.length) return null;
+
+  return (
+    <section className="panel extraction-warnings">
+      <div className="extraction-warnings-summary">
+        <span className="extraction-warning-icon" aria-hidden="true">!</span>
+        <div>
+          <h2>Points d'attention de l'extraction</h2>
+          <p>{`${warnings.length} signalement${warnings.length > 1 ? "s" : ""} technique${warnings.length > 1 ? "s" : ""} conservé${warnings.length > 1 ? "s" : ""} pour l'audit.`}</p>
+        </div>
+      </div>
+      <details>
+        <summary>Consulter le journal technique</summary>
+        <ul>
+          {warnings.map((warning) => <li key={warning}>{humanizeWarning(warning)}</li>)}
+        </ul>
+      </details>
+    </section>
+  );
+}
+
+function humanizeWarning(warning) {
+  return String(warning)
+    .replace(/_/g, " ")
+    .replace(/\bconflicting\b/gi, "présente des valeurs divergentes")
+    .replace(/\bexclus\b/gi, "écartés")
+    .replace(/\binvalidé\b/gi, "invalidé")
+    .replace(/\s+/g, " ")
+    .trim();
 }
