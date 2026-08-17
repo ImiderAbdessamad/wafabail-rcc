@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import * as api from "../lib/api.js";
-import { exportDossierPdf, exportDossierWorkbook } from "../lib/dossierExport.js";
+import { exportDossierJson, exportDossierPdf, exportDossierWorkbook } from "../lib/dossierExport.js";
 import { STATUS_META } from "../lib/fields.js";
 import { formatAmount, formatAmountMad, formatDate, pluralize } from "../lib/format.js";
 import Icon, { ICONS } from "../components/Icon.jsx";
@@ -12,9 +12,8 @@ import Banner from "../components/detail/Banner.jsx";
 import CompliancePanel from "../components/detail/CompliancePanel.jsx";
 import FieldGroups from "../components/detail/FieldGroups.jsx";
 import ViewerPane from "../components/detail/ViewerPane.jsx";
-import {
-  EscalateModal, RejectModal, ValidatedModal,
-} from "../components/detail/DetailModals.jsx";
+import { RejectModal, ValidatedModal } from "../components/detail/DetailModals.jsx";
+import { useSession } from "../hooks/useSession.jsx";
 import { useToasts } from "../hooks/useToasts.jsx";
 
 const SAVE_DEBOUNCE = 650;
@@ -23,6 +22,7 @@ export default function DossierDetail({ onDossierChanged }) {
   const { dossierId } = useParams();
   const navigate = useNavigate();
   const { toast, announce } = useToasts();
+  const { user } = useSession();
 
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -34,7 +34,7 @@ export default function DossierDetail({ onDossierChanged }) {
   const [targetCode, setTargetCode] = useState(null);
   const [savingCodes, setSavingCodes] = useState(new Set());
   const [formOnly, setFormOnly] = useState(false);
-  const [modal, setModal] = useState(null); // "reject" | "escalate" | "validated"
+  const [modal, setModal] = useState(null); // "reject" | "validated"
   const [busyAction, setBusyAction] = useState(null);
 
   const pendingEdits = useRef(new Map()); // code → valeur en attente
@@ -246,12 +246,26 @@ export default function DossierDetail({ onDossierChanged }) {
     const statusLabel = (STATUS_META[data.dossier.status] || STATUS_META.pending).label;
     try {
       if (kind === "excel") await exportDossierWorkbook({ ...data, statusLabel });
-      else await exportDossierPdf({ ...data, statusLabel });
+      else if (kind === "json") {
+        exportDossierJson({
+          ...data,
+          statusLabel,
+          exportedBy: user?.display_name || user?.username || null,
+        });
+      } else await exportDossierPdf({ ...data, statusLabel });
       toast(
         kind === "excel"
           ? "Le classeur contient une synthèse, les données RCC, les zones extraites et les contrôles."
-          : "Le rapport analyste est prêt à être partagé ou archivé.",
-        { title: kind === "excel" ? "Classeur Excel téléchargé" : "Rapport PDF téléchargé", type: "ok" }
+          : kind === "json"
+            ? "Les 20 postes RCC, les valeurs effectives, les preuves et les contrôles sont dans le fichier."
+            : "Le rapport analyste est prêt à être partagé ou archivé.",
+        {
+          title:
+            kind === "excel" ? "Classeur Excel téléchargé"
+              : kind === "json" ? "Fichier JSON téléchargé"
+                : "Rapport PDF téléchargé",
+          type: "ok",
+        }
       );
     } catch (err) {
       toast(err.message || "L'export n'a pas pu être généré.", { title: "Export impossible", type: "bad" });
@@ -348,6 +362,10 @@ export default function DossierDetail({ onDossierChanged }) {
 
         <div className="detail-actions">
           <div className="detail-action-group" aria-label="Exporter le dossier">
+            <button type="button" className="btn btn-ghost" onClick={() => onExport("json")}>
+              <Icon paths={ICONS.file} size={14} width={1.9} />
+              Exporter JSON
+            </button>
             <button type="button" className="btn btn-ghost" onClick={() => onExport("excel")}>
               <Icon paths={ICONS.file} size={14} width={1.9} />
               Exporter Excel
@@ -359,14 +377,6 @@ export default function DossierDetail({ onDossierChanged }) {
           </div>
           <span className="detail-action-divider" aria-hidden="true" />
           <div className="detail-action-group" aria-label="Décision analyste">
-            <button
-              type="button"
-              className="btn btn-ghost"
-              disabled={dossier.status === "escalated"}
-              onClick={() => setModal("escalate")}
-            >
-              Demander un arbitrage
-            </button>
             <button
               type="button"
               className="btn btn-danger"
@@ -511,19 +521,6 @@ export default function DossierDetail({ onDossierChanged }) {
             { successTitle: "Dossier rejeté", successText: `${dossier.id} retourne au gestionnaire.` }
           );
           if (updated) navigate("/dossiers");
-          return Boolean(updated);
-        }}
-      />
-
-      <EscalateModal
-        open={modal === "escalate"}
-        compliance={compliance}
-        onClose={() => setModal(null)}
-        onConfirm={async ({ comment }) => {
-          const updated = await patchDossier(
-            { status: "escalated", motif: "Arbitrage superviseur demandé", comment },
-            { successTitle: "Arbitrage demandé", successText: `${dossier.id} sort de votre file.` }
-          );
           return Boolean(updated);
         }}
       />

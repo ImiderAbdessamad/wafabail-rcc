@@ -1,4 +1,4 @@
-"""API jobs d'extraction bilancielle RCC (GLM Vision → champs EKIP)."""
+"""API jobs d'extraction bilancielle RCC (moteur v10 → champs EKIP)."""
 from __future__ import annotations
 
 import asyncio
@@ -13,7 +13,7 @@ from app.config import DIRECT_FINANCIAL_MAX_PAGES, MAX_UPLOAD_BYTES
 from app.schemas.dossier import SessionUser
 from app.schemas.rcc import RccAnalysisResult, RccJobCreateResponse, RccJobProgress
 from app.services.auth import require_analyst
-from app.services.direct_financial_extraction_pipeline import run_financial_job
+from app.services.rcc_lab_pipeline import run_financial_job
 from app.services.dossier_store import store_pdf
 from app.services.financial_job_store import job_store
 

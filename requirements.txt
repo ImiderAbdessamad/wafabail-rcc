@@ -8,3 +8,8 @@ pydantic>=2.7.0
 pdfplumber>=0.11.0
 pymupdf>=1.24.0
 ollama>=0.4.0
+# Moteur d'extraction RCC (app/services/ocr_lab_core_v10.py)
+requests>=2.32.0
+numpy>=1.26.0
+pandas>=2.2.0
+opencv-python-headless>=4.10.0

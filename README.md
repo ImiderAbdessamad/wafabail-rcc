@@ -42,7 +42,7 @@
 
 ## Overview
 
-**Wafabail RCC** is a FastAPI-based web application that automates the extraction of financial data from Moroccan tax filing documents (*liasses fiscales*). It uses the **GLM-4V** vision model (served locally via [Ollama](https://ollama.ai)) to read scanned or digitally-generated PDF pages and extract exactly **20 financial fields** required by the **EKIP** credit risk model.
+**Wafabail RCC** is a FastAPI-based web application that automates the extraction of financial data from Moroccan tax filing documents (*liasses fiscales*). It runs the **v10 « robust » extraction engine** — a grid-guided, multi-model vision pipeline served by [Ollama](https://ollama.ai) — to read scanned or digitally-generated PDF pages and extract exactly **20 financial fields** required by the **EKIP** credit risk model.
 
 The system also provides a **dossier management workflow** where analysts can review, correct, validate, or reject extracted data before it's transmitted to EKIP, with a full **audit trail** and **compliance engine**.
 
@@ -50,10 +50,12 @@ The system also provides a **dossier management workflow** where analysts can re
 
 | Capability | Description |
 |-----------|-------------|
-| 🤖 **AI-Powered OCR** | GLM-4V vision model reads scanned financial tables page-by-page |
+| 🤖 **Grid-guided OCR** | The printed table grid is detected, then each cell is read in isolation — no row shifting |
+| 🧠 **Multi-model consensus** | Three vision models read and cross-check every amount; disagreements are surfaced, not guessed |
 | 📊 **20 RCC Fields** | Extracts exactly the financial fields needed for EKIP credit scoring |
+| 🚫 **No invented figures** | A blank cell stays blank, a value that fails its section arithmetic is flagged for review |
 | 🔄 **Async Processing** | Background job processing with real-time progress via SSE |
-| ✅ **Accounting Controls** | Automated sanity checks (balance sheet equilibrium, result consistency) |
+| ✅ **Accounting Controls** | Seven arithmetic identities checked on the extracted evidence |
 | 📋 **Dossier Management** | Full validation queue with status tracking (pending → validated/rejected) |
 | ✏️ **Analyst Corrections** | Analysts can override AI-extracted values with full audit trail |
 | 🔒 **Authentication** | Session-based analyst login with secure cookie handling |
@@ -73,7 +75,7 @@ Wafabail processes lease credit applications that require analysis of the applic
 - **Tax result computations** (Résultat Fiscal)
 - **Management balance statements** (État des Soldes de Gestion — ESG)
 
-Previously, analysts had to **manually read and type** 20+ financial values from these documents — a slow, error-prone process. This application automates that extraction using computer vision AI, reducing processing time from ~30 minutes to ~2 minutes per document while maintaining accuracy through human review.
+Previously, analysts had to **manually read and type** 20+ financial values from these documents — a slow, error-prone process. This application automates that extraction using computer vision AI. The engine trades speed for reliability: it re-reads and cross-checks every amount, so a document takes several minutes to process, but what reaches the analyst is either a corroborated figure or an explicitly flagged one — never a plausible-looking guess.
 
 ---
 
@@ -98,10 +100,11 @@ Previously, analysts had to **manually read and type** 20+ financial values from
 │  └────┬─────┘  └──────────┘  └────┬─────┘  └─────────────┘  │
 │       │                           │                          │
 │  ┌────▼──────────────────────┐  ┌─▼──────────────────────┐   │
-│  │   Extraction Pipeline     │  │  Dossier Store          │   │
+│  │  Extraction Engine (v10)  │  │  Dossier Store          │   │
 │  │                           │  │  (SQLite persistence)   │   │
-│  │  PDF→PNG→Classify→GLM→   │  │                         │   │
-│  │  Resolve→Controls→RCC    │  │  Compliance Engine       │   │
+│  │  Render→Orient→Classify→ │  │                         │   │
+│  │  Grid→Ensemble OCR→Map→  │  │  Compliance Engine       │   │
+│  │  Resolve→Controls→RCC    │  │                         │   │
 │  └────────────┬──────────────┘  └─────────────────────────┘   │
 │               │                                               │
 │  ┌────────────▼──────────────┐  ┌─────────────────────────┐   │
@@ -111,110 +114,121 @@ Previously, analysts had to **manually read and type** 20+ financial values from
 └──────────────────────────────────────────────────────────────┘
                         │
                         ▼
-           ┌────────────────────────┐
-           │   Ollama Server        │
-           │   GLM-4V Vision Model  │
-           │   (localhost:11434)     │
-           └────────────────────────┘
+           ┌──────────────────────────────────────┐
+           │   Ollama Server                      │
+           │   GLM-4.6V   orientation / classify  │
+           │   glm-ocr    cell reading            │
+           │   qwen3-vl   independent verify      │
+           │   qwen3.5    label mapping           │
+           │   gemma4     label arbitration       │
+           └──────────────────────────────────────┘
 ```
 
 ---
 
 ## The Extraction Pipeline
 
-When a PDF is uploaded, the system executes the following pipeline:
+The extraction engine is `app/services/ocr_lab_core_v10.py` — a vendored copy of the
+reference laboratory script
+(`documentation-wafabail/use-case-RCC/wafabail_ocr_lab_core_v10_robust.py`, pipeline
+version `v10-robust-grid-ensemble-recovery`). Prompts, thresholds, grid geometry,
+resolution rules and controls are identical to the script, so what is validated in the
+lab is exactly what the API serves. `app/services/rcc_lab_pipeline.py` only runs the
+engine in a worker thread and projects its output onto the API schema.
 
-### Step 1 — PDF Validation & Rendering
+The engine's guiding principle is **never invent a number**. A blank cell stays blank
+(it is never turned into a zero), a value read by a single model is only kept when the
+arithmetic of its section confirms it, and any disagreement is surfaced to the analyst
+instead of being silently arbitrated.
 
-- Validates the PDF signature (`%PDF` header), file size (≤ 50 MB), and MIME type
-- Renders each page to a **PNG image** at 180 DPI using PyMuPDF
-- Extracts **native text** (if the PDF has selectable text, not just scanned images)
-- Caps processing at 60 pages maximum
+### Step 1 — Native text vs scan
 
-### Step 2 — Orientation Detection
+Each page is first tested for usable embedded text (≥ 80 characters and ≥ 15 words).
+Vector PDFs are read directly from their text layer — no model call at all. Scanned
+pages are rendered at **220 DPI** and go through the vision pipeline.
 
-- Analyzes each page image to detect rotation (0°, 90°, 180°, 270°)
-- Considers the PDF's declared rotation metadata
-- Auto-rotates pages to upright orientation for accurate AI reading
+### Step 2 — Orientation and page type
 
-### Step 3 — Page Classification (3-Level)
-
-Each page is classified into one of 9 types:
+`scan_layout_agent` asks GLM-4.6V for the page rotation, has **Qwen3-VL verify it
+independently**, crops to the visible content, then classifies the page into one of nine
+types:
 
 | Type | Description |
 |------|-------------|
-| `IDENTIFICATION` | Company identity page (name, tax ID, ICE, address) |
+| `IDENTIFICATION` | Company identity page (name, tax ID, ICE, RC, address, exercise dates) |
 | `BILAN_ACTIF` | Balance sheet — assets side |
 | `BILAN_PASSIF` | Balance sheet — liabilities side |
 | `CPC` | Income statement (Compte de Produits et Charges) |
 | `DETAIL_CPC` | Detailed breakdown of CPC line items |
-| `RESULTAT_FISCAL` | Tax result computation |
-| `ESG` | Management balance statement (État des Soldes de Gestion) |
+| `RESULTAT_FISCAL` | Tax result computation (not extracted) |
+| `ESG` | Management balance statement (not extracted) |
 | `AUTRE` | Non-financial page (skipped) |
 | `VIDE` | Blank page (skipped) |
 
-**Classification levels:**
+Only `IDENTIFICATION`, `BILAN_ACTIF`, `BILAN_PASSIF`, `CPC` and `DETAIL_CPC` are extracted.
 
-1. **Lexical analysis** — searches the native PDF text for keywords (e.g., "bilan actif", "capitaux propres", "compte de produits et charges")
-2. **Continuation detection** — if the text contains terms related to the previous page's type, assumes it's a multi-page continuation
-3. **GLM Vision fallback** — sends a downscaled image to the AI and asks "what type of financial page is this?"
+### Step 3 — Grid-guided reading
 
-### Step 4 — AI-Powered Data Extraction
+For balance sheet and CPC pages, OpenCV detects the printed table grid (progressive
+tolerances handle scans where a separator is drawn twice a few pixels apart). Each
+expected row is then located on the page, and **each cell is cropped and read in
+isolation** rather than asking a model to transcribe a whole table. This is what removes
+the classic failure mode where a blank line shifts every amount below it onto the wrong
+label.
 
-For each financial page, the system:
+If the grid cannot be detected, the engine falls back to the full-table reading mode.
 
-1. Converts the page image to **enhanced JPEG** (auto-contrast + sharpening for better table readability)
-2. Sends it to **GLM-4V via Ollama** with a structured prompt tailored to the page type
-3. The AI returns JSON with **candidates** — each containing:
-   - `field_code` — which financial field it represents
-   - `raw_value` — the amount as read from the image (e.g., `"1 234 567,00"`)
-   - `confidence` — AI confidence score (0.0 to 1.0)
-   - `evidence` — the row label, column name, and source excerpt
+### Step 4 — Multi-model cell consensus
 
-**Fallback strategies when extraction fails:**
+Every located cell goes through an ensemble:
 
-| Strategy | When Used |
-|----------|-----------|
-| **Regional fallback** | If full-page extraction returns 0 candidates → crop the page into regions and retry each |
-| **Focused retry** | If key fields (TOTAL_ACTIF, CHIFFRE_AFFAIRES, etc.) are missing → send a targeted prompt asking specifically for those fields |
-| **Type correction** | If classification might be wrong → try alternative page types (e.g., if BILAN_ACTIF fails, try BILAN_PASSIF) |
-| **Orientation retry** | If rotated and extraction fails → retry at 0° |
+1. `glm-ocr` reads the cell (original and contrast-enhanced views)
+2. `qwen3-vl` re-reads it independently
+3. `GLM-4.6V` arbitrates when the two disagree
 
-### Step 5 — Native Text Recovery
+Each cell ends up in one of three explicit states — `value`, `blank` or `uncertain` —
+and a constraint solver checks the reading against the row's own arithmetic
+(`Brut − Amortissements = Net`, `Opérations propres + exercices antérieurs = Total`).
+Section subtotals are also verified against their components; a section that does not add
+up is re-read before being accepted.
 
-Safety net: if the AI missed fields but the PDF has selectable text, regex-based extraction attempts to recover amounts directly from the text.
+### Step 5 — Semantic mapping (amount-blind)
 
-### Step 6 — Candidate Resolution & Deduplication
+Row labels are mapped to canonical field codes by `qwen3.5`, with `gemma4` arbitrating
+ambiguous cases. **Neither model ever sees the amounts**: semantic reasoning decides what
+a row *means*, but can never rewrite, choose or invent a figure. A rule-based alias map
+handles the standard DGI wording and acts as the fallback when the mapper fails.
 
-- Removes duplicate candidates (same field found on multiple pages)
-- Selects the best candidate per field based on confidence, nature hierarchy (`GRAND_TOTAL` > `SECTION_TOTAL` > `SUBTOTAL` > `DETAIL`), and column role
-- Parses raw amount strings (`"1 234 567,00"`) into `Decimal` numbers
+### Step 6 — Resolution of the 20 RCC fields
 
-### Step 7 — Accounting Controls
+`resolve_rcc` selects one value per RCC field from the evidence, preferring the page type
+where the field is authoritative. `RESULTAT_NET` additionally requires corroboration
+across independent pages (CPC and Bilan Passif). Each field is returned with a status:
 
-Validates extracted data against fundamental accounting identities:
+| Engine status | API status | Meaning |
+|---------------|-----------|---------|
+| `confirmed` / `cross_validated` | `confirmed` | Read directly, and corroborated when found twice |
+| `low_confidence` / `needs_review` | `ambiguous` | Value present but OCR or a control is unresolved |
+| `derived` / `partial` / `proxy` | `derived` | Computed from printed rows, or taken from a neighbouring line |
+| `blank_on_form` / `missing` | `missing` | Row visibly blank, or not found — never coerced to 0 |
+| `conflicting` (both variants) | `conflicting` | Pages disagree — the analyst arbitrates |
 
-| Control | Rule |
-|---------|------|
-| Balance sheet equilibrium | Total Assets = Total Liabilities |
-| Operating result | Revenue − Expenses = Operating Result |
-| Financial result | Financial Income − Financial Charges = Financial Result |
-| Current result | Operating + Financial = Current Result |
-| Non-current result | Non-current Income − Non-current Charges = Non-current Result |
-| Pre-tax result | Current + Non-current = Pre-tax Result |
-| Net result | Pre-tax − Tax = Net Result |
-| Net cash | Cash Assets − Cash Liabilities = Net Cash |
+`CA_EXPORT` is summed from the three explicitly printed export rows, and `TYPE_RESULTAT`
+is derived from the sign of `RESULTAT_NET` (`Bénéficiaire`, `Déficitaire` or `Nul`).
 
-Failed controls **invalidate** affected fields (set to `conflicting` with `value = null`).
+### Step 7 — Accounting controls and status propagation
 
-### Step 8 — RCC Field Mapping
+Seven arithmetic controls run on the extracted evidence (see
+[Accounting Controls](#accounting-controls)). A numeric field touched by a failed control,
+or by an unresolved cross-check, is downgraded to `needs_review` rather than being left as
+a confident read — it will show up as *à vérifier* in the validation screen.
 
-Maps internal dataset fields to the **final 20 RCC fields** for EKIP, with intelligent fallback aliases:
+### Step 8 — Projection onto the API schema
 
-- `DETTES_BANCAIRES_MLT` → tries `dettes_bancaires_mlt`, falls back to `dettes_financieres`
-- `CHARGES_INTERETS` → tries `frais_financiers`, falls back to `charges_financieres`
-- `TOTAL_BILAN` → tries `total_bilan`, `total_actif`, or `total_passif`
-- `TYPE_RESULTAT` is **derived**: positive net result → `"Bénéficiaire"`, negative → `"Déficitaire"`, zero → `"Nul"`
+`rcc_lab_pipeline.build_result` turns the engine's four DataFrames into
+`RccAnalysisResult`: the 20 ordered fields with their evidence (page, label, raw value,
+column, confidence), the N-1 figures read on the same rows, the page audit, the controls,
+and French warnings. No amount is recomputed at this stage.
 
 ---
 
@@ -254,10 +268,13 @@ These are the 20 financial fields extracted by the system:
 | Layer | Technology | Purpose |
 |-------|-----------|---------|
 | **Backend** | [FastAPI](https://fastapi.tiangolo.com/) ≥ 0.115 | Async web framework with auto-generated OpenAPI docs |
-| **AI Vision** | [GLM-4V](https://github.com/THUDM/GLM-4) via [Ollama](https://ollama.ai) | Vision-language model for reading financial tables from images |
-| **PDF Processing** | [PyMuPDF](https://pymupdf.readthedocs.io/) (`fitz`) | PDF rendering to images + native text extraction |
+| **AI Vision** | GLM-4.6V-Flash, `glm-ocr`, `qwen3-vl` via [Ollama](https://ollama.ai) | Orientation, cell reading and independent verification |
+| **AI Reasoning** | `qwen3.5`, `gemma4` via Ollama | Amount-blind label mapping and arbitration |
+| **PDF Processing** | [PyMuPDF](https://pymupdf.readthedocs.io/) | PDF rendering to images + native text extraction |
+| **Table Geometry** | [OpenCV](https://opencv.org/) + [NumPy](https://numpy.org/) | Grid detection, row/column projection, morphology |
+| **Tabular Output** | [pandas](https://pandas.pydata.org/) | Audit, evidence, RCC and control frames |
 | **Image Processing** | [Pillow](https://pillow.readthedocs.io/) (PIL) | Image rotation, downscaling, contrast enhancement |
-| **HTTP Client** | [httpx](https://www.python-httpx.org/) | Async HTTP for Ollama API calls |
+| **HTTP Client** | [requests](https://requests.readthedocs.io/) (engine), [httpx](https://www.python-httpx.org/) | Ollama API calls |
 | **Data Validation** | [Pydantic](https://docs.pydantic.dev/) v2 | Schema validation, serialization, and API documentation |
 | **Database** | SQLite (stdlib) | Dossier persistence, audit trail, sessions |
 | **Frontend** | React 18 + React Router + Vite | Responsive single-page UI with a component architecture, drag-and-drop, and SSE progress |
@@ -299,32 +316,19 @@ wafabail-rcc/
 │       ├── __init__.py
 │       │
 │       │  # ── Core Pipeline ──────────────────────────────────
-│       ├── direct_financial_extraction_pipeline.py  # Main orchestrator
-│       ├── direct_glm_financial_client.py           # Ollama/GLM API client
-│       ├── financial_page_classifier.py             # Page type classification
-│       ├── financial_orientation_detector.py         # Page rotation detection
-│       ├── page_preprocessor.py                     # Image cropping for regions
-│       │
-│       │  # ── Resolution & Validation ────────────────────────
-│       ├── direct_financial_resolver.py     # Candidate dedup & best-pick
-│       ├── financial_candidate_resolver.py  # Complex candidate resolution
-│       ├── financial_dataset_builder.py     # Structured dataset construction
-│       ├── financial_controls.py            # Accounting sanity checks
-│       ├── financial_normalizer.py          # Value normalization
-│       │
-│       │  # ── Mapping & Recovery ─────────────────────────────
-│       ├── rcc_mapper.py                    # Dataset → 20 RCC fields
-│       ├── native_financial_recovery.py     # Fallback: text-based extraction
-│       ├── amount_parser.py                 # "1 234 567,00" → Decimal
-│       ├── label_normalizer.py              # French label normalization
-│       ├── markdown_financial_parser.py     # Parse markdown tables from GLM
+│       ├── ocr_lab_core_v10.py     # Extraction engine (vendored lab script)
+│       ├── rcc_lab_pipeline.py     # Engine runner + projection to RccAnalysisResult
 │       │
 │       │  # ── Infrastructure ─────────────────────────────────
 │       ├── financial_job_store.py   # In-memory job store with TTL & pub/sub
 │       ├── auth.py                  # Session authentication service
 │       ├── dossier_store.py         # SQLite-backed dossier persistence
-│       └── rcc_compliance.py        # Compliance rules engine
+│       ├── rcc_compliance.py        # Compliance rules engine
+│       │
+│       │  # ── Superseded by the v10 engine, kept for reference ─
+│       └── direct_*.py, financial_*.py, rcc_mapper.py, ...
 │
+
 ├── frontend/                        # React + Vite source application
 │   ├── src/                         # Screens, components, hooks, API client and styles
 │   ├── package.json                 # Frontend scripts and dependencies
@@ -332,6 +336,7 @@ wafabail-rcc/
 ├── static/                          # Generated Vite assets served by FastAPI
 │
 ├── scripts/
+│   ├── run_extraction.py            # Run the pipeline on a local PDF (no API)
 │   └── seed_demo.py                 # Generate demo dossiers for testing
 │
 └── tests/
@@ -343,21 +348,32 @@ wafabail-rcc/
 ## Prerequisites
 
 1. **Python 3.11+** — required for modern type hint syntax (`X | None`)
-2. **Ollama** — must be installed and running locally with a vision model loaded
+2. **Ollama** — reachable server hosting the five models of the pipeline
 3. **Git** — for version control
 
-### Install Ollama & Load the Model
+### Load the Five Models
+
+The engine refuses to start if any required model is missing (`check_models`), so pull
+them all before the first run:
 
 ```bash
-# Install Ollama from https://ollama.ai
-# Then pull the vision model:
-ollama pull hf.co/unsloth/GLM-4.6V-Flash-GGUF:Q4_K_M
+# Install Ollama from https://ollama.ai, then:
+ollama pull hf.co/unsloth/GLM-4.6V-Flash-GGUF:Q4_K_M   # orientation, classification, arbitration
+ollama pull glm-ocr:q8_0                               # cell OCR
+ollama pull qwen3-vl:30b                               # independent verification
+ollama pull qwen3.5:9b                                 # label mapping (amount-blind)
+ollama pull gemma4:latest                              # label arbitration (amount-blind)
 
-# Verify it's running:
+# Verify they are all listed:
 curl http://localhost:11434/api/tags
 ```
 
-> **Hardware Note:** GLM-4V requires a GPU with at least 6 GB VRAM for acceptable performance. CPU-only inference is possible but very slow (~5 min/page vs ~15 sec/page on GPU).
+Point `RCC_OLLAMA_URL` (or `OLLAMA_URL`) at a remote server if the models are hosted
+elsewhere.
+
+> **Hardware note:** the ensemble reads each table cell with several models, which is what
+> buys the accuracy. Budget a GPU with 24 GB VRAM or more; on a small GPU the run still
+> completes but page latency grows substantially.
 
 ---
 
@@ -402,21 +418,24 @@ All settings are read from environment variables (loaded from `.env` via `python
 | `ALLOWED_ORIGINS` | `*` | CORS allowed origins (comma-separated) |
 | `MAX_UPLOAD_MB` | `50` | Maximum PDF upload size in megabytes |
 
-### Extraction Pipeline Settings
+### Extraction Engine Settings
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DIRECT_FINANCIAL_MODEL` | Same as vision model | Model for financial extraction |
-| `DIRECT_FINANCIAL_TIMEOUT_SECONDS` | `300` | Per-page extraction timeout |
-| `DIRECT_FINANCIAL_NUM_CTX` | `8192` | Context window size (tokens) |
-| `DIRECT_FINANCIAL_NUM_PREDICT` | `4096` | Max output tokens per extraction |
-| `DIRECT_FINANCIAL_KEEP_ALIVE` | `10m` | How long Ollama keeps the model loaded |
-| `DIRECT_FINANCIAL_MAX_ATTEMPTS` | `2` | Retry attempts per page on failure |
-| `DIRECT_FINANCIAL_RENDER_DPI` | `180` | PDF → PNG rendering quality |
-| `DIRECT_FINANCIAL_MAX_PAGES` | `60` | Maximum pages to process per PDF |
-| `DIRECT_FINANCIAL_PAGE_DELAY_SECONDS` | `0.5` | Delay between pages (GPU cooling) |
-| `DIRECT_FINANCIAL_MAX_IMAGE_DIMENSION` | `1600` | Max image dimension in pixels |
-| `DIRECT_FINANCIAL_REGION_FALLBACK` | `true` | Enable crop-and-retry fallback |
+| `RCC_OLLAMA_URL` | Falls back to `OLLAMA_URL` | Server hosting the five models |
+| `RCC_VISION_MODEL` | `hf.co/unsloth/GLM-4.6V-Flash-GGUF:Q4_K_M` | Orientation, classification, tie-break |
+| `RCC_OCR_MODEL` | `glm-ocr:q8_0` | Isolated cell reading |
+| `RCC_VERIFY_MODEL` | `qwen3-vl:30b` | Independent verification of each cell |
+| `RCC_MAPPER_MODEL` | `qwen3.5:9b` | Label → field mapping (never sees amounts) |
+| `RCC_ADJUDICATOR_MODEL` | `gemma4:latest` | Arbitration of ambiguous labels |
+| `RCC_USE_GLM_VERIFICATION` | `true` | Disable to skip scanned pages entirely (native text only) |
+| `RCC_USE_REASONING_MAPPER` | `true` | Disable to fall back to rule-based label mapping |
+| `RCC_USE_ADJUDICATOR` | `true` | Disable if `gemma4` is not available on the server |
+| `RCC_REQUEST_TIMEOUT_SECONDS` | `600` | Per-call Ollama timeout |
+| `RCC_KEEP_ALIVE` | `20m` | How long Ollama keeps the models loaded |
+| `RCC_RENDER_DPI` | `220` | PDF → image rendering quality |
+| `RCC_EXTRACT_MAX_SIDE` | `2400` | Max image dimension sent to the models |
+| `DIRECT_FINANCIAL_MAX_PAGES` | `60` | Upper bound accepted for `max_pages` |
 | `DIRECT_FINANCIAL_JOB_TTL_MINUTES` | `60` | Job expiration time in memory |
 
 ### Authentication & Database Settings
@@ -679,20 +698,25 @@ Before a dossier can be validated, it must pass **server-side compliance checks*
 
 ## Accounting Controls
 
-The system verifies fundamental accounting identities:
+The engine verifies seven accounting identities directly on the extracted evidence:
 
-| Control Code | Rule | Affected Fields |
-|-------------|------|-----------------|
-| `bilan_equilibre` | Total Assets ≈ Total Liabilities | TOTAL_ACTIF, TOTAL_PASSIF |
-| `tresorerie_nette` | Cash Net = Cash Assets − Cash Liabilities | TRESORERIE_ACTIF, TRESORERIE_PASSIF |
-| `resultat_exploitation` | Operating Result = Revenue − Expenses | PRODUITS_EXPLOITATION, CHARGES_EXPLOITATION |
-| `resultat_financier` | Financial Result = Fin. Income − Fin. Charges | PRODUITS_FINANCIERS, CHARGES_FINANCIERES |
-| `resultat_courant` | Current Result = Operating + Financial | RESULTAT_EXPLOITATION, RESULTAT_FINANCIER |
-| `resultat_non_courant` | NC Result = NC Income − NC Charges | PRODUITS_NON_COURANTS, CHARGES_NON_COURANTES |
-| `resultat_avant_impot` | Pre-tax = Current + Non-current | RESULTAT_COURANT, RESULTAT_NON_COURANT |
-| `resultat_net` | Net = Pre-tax − Tax | RESULTAT_AVANT_IMPOT, IMPOT_SUR_RESULTATS |
+| Control Code | Rule | Scope |
+|-------------|------|-------|
+| `bilan_equilibre` | Total Assets = Total Liabilities | Document |
+| `bilan_actif_totaux` | Fixed + current assets + cash = Total assets | Bilan Actif |
+| `bilan_passif_totaux` | Permanent + current liabilities + cash = Total liabilities | Bilan Passif |
+| `cpc_ventes_chiffre_affaires` | Goods sales + services sales = Revenue | CPC |
+| `resultat_net` | Net result in the CPC = net result carried in the liabilities | Document |
+| `actif_brut_amort_net` | Gross − Depreciation = Net | Every asset row |
+| `cpc_operations_total` | Own operations + prior periods = Exercise total | Every CPC row |
 
-Tolerance: `max(1.00 MAD, 0.01% of reference value)`
+The last two run on every printed row; the API aggregates them into a single control each,
+reporting how many rows were checked and which ones disagree.
+
+Tolerance: `0.02 MAD` (the engine works in `Decimal`, never in floating point).
+
+A failed control does not erase the value — it downgrades the affected fields to
+*needs review* so the analyst sees both the reading and the discrepancy.
 
 ---
 
@@ -729,6 +753,25 @@ uvicorn main:app --host 127.0.0.1 --port 8001
 # In another terminal:
 python tests/test_api_smoke.py
 ```
+
+### Run the Projection Tests
+
+```bash
+python tests/test_rcc_projection.py
+```
+
+Feeds a synthetic balanced tax return through the real engine functions
+(`resolve_rcc`, `run_controls`) and the API projection, then checks the 20 fields,
+their statuses, evidence, N-1 figures, controls and page audit — no Ollama needed.
+
+### Run the Engine on a PDF (no API)
+
+```bash
+py -3 scripts/run_extraction.py path/to/liasse.pdf --json out.json
+```
+
+Prints the 20 RCC fields with their status and confidence, the accounting controls and the
+warnings — the fastest way to check an engine change before exposing it through the API.
 
 The smoke tests in `tests/test_api_smoke.py` cover:
 - Health check endpoint
@@ -806,13 +849,14 @@ server {
 
 | Problem | Cause | Solution |
 |---------|-------|----------|
-| `504 Gateway Timeout` on first request | Ollama model cold-start | The app does a warmup ping — wait ~30s for the model to load |
-| `Modèle introuvable sur Ollama` | Model not pulled | Run `ollama pull hf.co/unsloth/GLM-4.6V-Flash-GGUF:Q4_K_M` |
-| 0 candidates on every page | Wrong model or low DPI | Check `DIRECT_FINANCIAL_MODEL` and try increasing `DIRECT_FINANCIAL_RENDER_DPI` |
-| Very slow extraction (~5 min/page) | CPU-only Ollama | Use a GPU with ≥ 6 GB VRAM |
+| `Required Ollama model(s) missing: [...]` | One of the five models is not pulled | Pull the listed model, or disable the optional one via `RCC_USE_ADJUDICATOR=false` |
+| Job fails immediately with a connection error | `RCC_OLLAMA_URL` unreachable | Check the server with `curl $RCC_OLLAMA_URL/api/tags` |
+| Every page is `UNCLASSIFIED` | Vision model not answering the layout prompt | Check `RCC_VISION_MODEL` matches a model listed by `/api/tags` |
+| Many fields `missing` on a readable page | Grid not detected on a low-quality scan | Increase `RCC_RENDER_DPI` (220 → 300) and re-run |
+| Very slow extraction (minutes per page) | Expected — the ensemble reads each cell several times | Reduce scope with `max_pages`, or run on a larger GPU |
 | `Fichier trop volumineux` | PDF exceeds limit | Increase `MAX_UPLOAD_MB` or split the PDF |
-| `done_reason=length` errors | AI output truncated | Increase `DIRECT_FINANCIAL_NUM_PREDICT` (default 4096) |
-| Balance sheet shows `conflicting` | Accounting check failed | The AI misread a value — analyst must correct it in the dossier |
+| Field shows `needs review` with a value | An accounting control did not balance | Compare with the highlighted evidence and correct it in the dossier |
+| Field shows `conflicting` | Two pages disagree on the amount | The analyst arbitrates; both readings are kept in the evidence panel |
 | Session expired immediately | Clock skew | Ensure server time is accurate (NTP) |
 
 ---
@@ -837,10 +881,6 @@ server {
 
 ---
 
-## Authors
-
-- **Wafabail Development Team**
-- Built for the EKIP credit risk model integration
 
 ---
 

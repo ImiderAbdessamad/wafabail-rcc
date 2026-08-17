@@ -18,6 +18,8 @@ export const ICONS = {
   clipboardCheck: ["M9 11l2 2 4-4", "M5 3h14a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"],
   history: ["M3 12a9 9 0 1 0 3-6.7L3 8", "M3 3v5h5", "M12 7v5l3 2"],
   search: ["M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z", "m21 21-4.35-4.35"],
+  plus: ["M12 5v14", "M5 12h14"],
+  minus: ["M5 12h14"],
 };
 
 export default function Icon({ paths, size = 16, width = 2, className, style }) {

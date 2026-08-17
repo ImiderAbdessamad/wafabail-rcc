@@ -201,7 +201,11 @@ async def get_dossier_file(
         path,
         media_type="application/pdf",
         filename=detail.filename or f"{dossier_id}.pdf",
-        headers={"Content-Disposition": f'inline; filename="{dossier_id}.pdf"'},
+        content_disposition_type="inline",
+        headers={
+            "Cache-Control": "private, max-age=60",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

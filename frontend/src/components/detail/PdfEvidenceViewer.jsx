@@ -1,17 +1,28 @@
 /* Lecteur PDF contrôlé : navigation page par page et surlignage des preuves OCR. */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { GlobalWorkerOptions, getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
-import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
+import { GlobalWorkerOptions, getDocument } from "pdfjs-dist/build/pdf.mjs";
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import Icon, { ICONS } from "../Icon.jsx";
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
+const PDFJS_ASSETS = {
+  wasmUrl: "/pdfjs/wasm/",
+  cMapUrl: "/pdfjs/cmaps/",
+  cMapPacked: true,
+  standardFontDataUrl: "/pdfjs/standard_fonts/",
+};
+
 const fold = (value) => String(value || "").normalize("NFD")
   .replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
 
-function terms(evidence) {
-  return [evidence.raw_label, evidence.raw_value].map(fold).filter((term) => term.length >= 3);
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 3;
+const ZOOM_STEP = 0.25;
+
+function clampZoom(value) {
+  return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(value * 100) / 100));
 }
 
 export default function PdfEvidenceViewer({ fileUrl, filename, fields, activeCode, activeEvidencePage, onFocusField }) {
@@ -30,6 +41,7 @@ export default function PdfEvidenceViewer({ fileUrl, filename, fields, activeCod
   const [showEvidence, setShowEvidence] = useState(true);
   const [importantCodes, setImportantCodes] = useState(() => new Set());
   const [rectangles, setRectangles] = useState([]);
+  const [zoom, setZoom] = useState(1);
 
   const evidence = useMemo(() => (fields || []).flatMap((field) =>
     (field.evidence || []).map((item) => ({ ...item, code: field.code, label: field.label }))
@@ -43,26 +55,55 @@ export default function PdfEvidenceViewer({ fileUrl, filename, fields, activeCod
 
   useEffect(() => {
     let disposed = false;
-    const task = getDocument({ url: fileUrl, withCredentials: true });
-    setStatus("loading"); setError(null); setPageCount(0);
-    task.promise.then((pdf) => {
-      if (disposed) { pdf.destroy(); return; }
-      pdfRef.current = pdf;
-      setPageCount(pdf.numPages);
-      setPageNumber((current) => Math.min(Math.max(1, current), pdf.numPages));
-      setStatus("ready");
-    }).catch(() => {
-      if (!disposed) {
-        setError("Le fichier est indisponible ou son format n'est pas pris en charge par ce navigateur.");
+    const controller = new AbortController();
+    setStatus("loading");
+    setError(null);
+    setPageCount(0);
+
+    async function load() {
+      try {
+        const response = await fetch(fileUrl, {
+          credentials: "same-origin",
+          signal: controller.signal,
+        });
+        if (response.status === 401) {
+          throw new Error("Session expirée — reconnectez-vous pour afficher la liasse.");
+        }
+        if (response.status === 404) {
+          throw new Error("Aucune liasse n'est rattachée à ce dossier, ou le fichier a été déplacé.");
+        }
+        if (!response.ok) {
+          throw new Error(`Impossible de charger le PDF (erreur ${response.status}).`);
+        }
+        const buffer = await response.arrayBuffer();
+        if (disposed) return;
+        const task = getDocument({ data: new Uint8Array(buffer), ...PDFJS_ASSETS });
+        const pdf = await task.promise;
+        if (disposed) {
+          pdf.destroy();
+          return;
+        }
+        pdfRef.current = pdf;
+        setPageCount(pdf.numPages);
+        setPageNumber((current) => Math.min(Math.max(1, current), pdf.numPages));
+        setStatus("ready");
+      } catch (reason) {
+        if (disposed || reason?.name === "AbortError") return;
+        setError(
+          reason?.message
+          || "Le fichier est indisponible ou son format n'est pas pris en charge par ce navigateur."
+        );
         setStatus("error");
       }
-    });
+    }
+
+    load();
     return () => {
       disposed = true;
+      controller.abort();
       renderRef.current?.cancel?.();
       if (typeof pdfRef.current?.destroy === "function") pdfRef.current.destroy();
       pdfRef.current = null;
-      if (typeof task.destroy === "function") task.destroy();
     };
   }, [fileUrl, loadAttempt]);
 
@@ -92,7 +133,7 @@ export default function PdfEvidenceViewer({ fileUrl, filename, fields, activeCod
         renderRef.current?.cancel();
         const page = await pdf.getPage(pageNumber);
         const baseViewport = page.getViewport({ scale: 1 });
-        const viewport = page.getViewport({ scale: pageWidth / baseViewport.width });
+        const viewport = page.getViewport({ scale: (pageWidth / baseViewport.width) * zoom });
         const ratio = window.devicePixelRatio || 1;
         const context = canvas.getContext("2d", { alpha: false });
         canvas.width = Math.floor(viewport.width * ratio); canvas.height = Math.floor(viewport.height * ratio);
@@ -135,7 +176,7 @@ export default function PdfEvidenceViewer({ fileUrl, filename, fields, activeCod
     }
     render();
     return () => { cancelled = true; };
-  }, [evidence, pageNumber, pageWidth, status]);
+  }, [evidence, pageNumber, pageWidth, status, zoom]);
 
   const toggleImportant = useCallback(() => {
     if (!activeCode) return;
@@ -179,6 +220,11 @@ export default function PdfEvidenceViewer({ fileUrl, filename, fields, activeCod
       <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Page précédente" disabled={pageNumber <= 1} onClick={() => setPageNumber((page) => Math.max(1, page - 1))}><Icon paths={ICONS.chevronLeft} size={15} width={2} /></button>
       <span>{pageCount ? `Page ${pageNumber}` : ""}</span>
       <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Page suivante" disabled={!pageCount || pageNumber >= pageCount} onClick={() => setPageNumber((page) => Math.min(pageCount, page + 1))}><Icon paths={ICONS.chevronRight} size={15} width={2} /></button>
+      <span className="pdf-zoom" role="group" aria-label="Zoom">
+        <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Zoom arrière" disabled={status !== "ready" || zoom <= ZOOM_MIN} onClick={() => setZoom((current) => clampZoom(current - ZOOM_STEP))}><Icon paths={ICONS.minus} size={15} width={2} /></button>
+        <button type="button" className="pdf-zoom-label" title="Revenir à la largeur de la page" disabled={status !== "ready"} onClick={() => setZoom(1)}>{Math.round(zoom * 100)} %</button>
+        <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Zoom avant" disabled={status !== "ready" || zoom >= ZOOM_MAX} onClick={() => setZoom((current) => clampZoom(current + ZOOM_STEP))}><Icon paths={ICONS.plus} size={15} width={2} /></button>
+      </span>
     </div>
   </div>;
 }

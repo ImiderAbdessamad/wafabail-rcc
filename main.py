@@ -7,10 +7,17 @@ Lancement :
 from __future__ import annotations
 
 import logging
+import mimetypes
 
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
+
+# Windows ne déclare pas toujours ces types : sans eux le worker PDF.js
+# (.mjs) et les décodeurs WASM sont servis en octet-stream et le lecteur échoue.
+mimetypes.add_type("text/javascript", ".mjs")
+mimetypes.add_type("application/javascript", ".mjs")
+mimetypes.add_type("application/wasm", ".wasm")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

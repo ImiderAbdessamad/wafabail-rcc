@@ -1,4 +1,4 @@
-/* Modales de l'écran de validation : rejet, arbitrage, confirmation. */
+/* Modales de l'écran de validation : rejet et confirmation. */
 
 import { useState } from "react";
 import { REJECT_MOTIFS } from "../../lib/fields.js";
@@ -54,55 +54,6 @@ export function RejectModal({ open, dossier, onClose, onConfirm }) {
         </button>
         <BusyButton busy={busy} className="btn btn-danger-solid" onClick={confirm}>
           Confirmer le rejet
-        </BusyButton>
-      </div>
-    </Modal>
-  );
-}
-
-export function EscalateModal({ open, compliance, onClose, onConfirm }) {
-  const [comment, setComment] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  async function confirm() {
-    setBusy(true);
-    const ok = await onConfirm({ comment: comment.trim() || null });
-    setBusy(false);
-    if (ok) onClose();
-  }
-
-  return (
-    <Modal open={open} onClose={onClose} labelledBy="escalateTitle">
-      <h2 className="modal-title" id="escalateTitle">Demander un arbitrage superviseur</h2>
-      <p className="modal-sub">
-        Le dossier reste en attente et sort de votre file. Un superviseur RCC tranche sur
-        les points signalés.
-      </p>
-
-      <div className="modal-recap">
-        <p className="modal-recap-title">Points transmis automatiquement</p>
-        <ul>
-          <li>{`· Règles de conformité bloquantes : ${compliance.blockers}`}</li>
-          <li>{`· Postes en incohérence d'extraction : ${compliance.conflicting_fields.length}`}</li>
-          <li>{`· Postes sous le seuil de confiance : ${compliance.low_confidence_fields.length}`}</li>
-          <li>{`· Postes non lus : ${compliance.missing_fields.length}`}</li>
-        </ul>
-      </div>
-
-      <textarea
-        placeholder="Question posée au superviseur…"
-        aria-label="Question au superviseur"
-        data-autofocus=""
-        value={comment}
-        onChange={(event) => setComment(event.target.value)}
-      />
-
-      <div className="modal-actions">
-        <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy}>
-          Annuler
-        </button>
-        <BusyButton busy={busy} className="btn btn-dark" onClick={confirm}>
-          Transmettre au superviseur
         </BusyButton>
       </div>
     </Modal>

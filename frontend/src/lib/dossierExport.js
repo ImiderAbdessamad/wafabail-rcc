@@ -103,6 +103,119 @@ export async function exportDossierWorkbook({ dossier, compliance, statusLabel }
   XLSX.writeFile(book, `RCC-${cleanFilePart(dossier.id)}-${cleanFilePart(dossier.client_name)}.xlsx`, { compression: true });
 }
 
+/**
+ * Fichier JSON machine-lisible : les 20 postes RCC avec la valeur effective
+ * (OCR éventuellement corrigée par l'analyste), les preuves, les contrôles et
+ * l'instantané de conformité. Destiné à EKIP ou à un retraitement.
+ */
+export function exportDossierJson({ dossier, compliance, statusLabel, exportedBy, effective_values }) {
+  const overrides = new Map((dossier.overrides || []).map((item) => [item.field_code, item]));
+  const result = dossier.result || {};
+  const fields = (result.fields || []).map((field) => {
+    const override = overrides.get(field.code) || null;
+    const isTag = field.code === "TYPE_RESULTAT";
+    const effectiveValue = override && override.corrected_value != null
+      ? override.corrected_value
+      : field.value;
+    return {
+      number: field.number,
+      code: field.code,
+      label: field.label,
+      unit: isTag ? null : (field.unit || "MAD"),
+      source: field.source,
+      status: field.status,
+      confidence: field.confidence ?? 0,
+      note: field.note || null,
+      review: override ? (override.verified ? "Confirmé" : "Corrigé") : "OCR",
+      value: isTag ? null : (effectiveValue ?? null),
+      value_n1: field.value_n1 ?? null,
+      type_resultat: isTag ? (field.note || null) : undefined,
+      ocr: {
+        value: field.value ?? null,
+        status: field.status,
+        confidence: field.confidence ?? 0,
+        note: field.note || null,
+      },
+      analyst: override
+        ? {
+            review: override.verified ? "verified" : "corrected",
+            original_value: override.original_value ?? null,
+            corrected_value: override.corrected_value ?? null,
+            edited_by: override.edited_by || null,
+            edited_at: override.edited_at || null,
+          }
+        : null,
+      evidence: (field.evidence || []).map((item) => ({
+        page_number: item.page_number ?? null,
+        raw_label: item.raw_label || null,
+        raw_value: item.raw_value || null,
+        column_name: item.column_name || null,
+        page_type: item.page_type || null,
+        confidence: item.confidence ?? null,
+        source_excerpt: item.source_excerpt || null,
+      })),
+    };
+  });
+
+  const payload = {
+    schema: "wafabail.rcc.v1",
+    exported_at: new Date().toISOString(),
+    exported_by: exportedBy || null,
+    dossier: {
+      id: dossier.id,
+      client_name: dossier.client_name || null,
+      ice: dossier.ice || null,
+      credit_amount: dossier.credit_amount ?? null,
+      exercice_date: dossier.exercice_date || null,
+      sector: dossier.sector || null,
+      status: dossier.status,
+      status_label: statusLabel,
+      filename: dossier.filename || null,
+      completeness_pct: dossier.completeness_pct ?? 0,
+      motif: dossier.motif || null,
+      comment: dossier.comment || null,
+      decided_by: dossier.decided_by || null,
+      decided_at: dossier.decided_at || null,
+    },
+    document: result.document || null,
+    extraction: {
+      model: result.extraction?.model || null,
+      warnings: result.warnings || [],
+      page_audit: result.extraction?.page_audit || [],
+    },
+    fields,
+    controls: (result.controls || []).map((control) => ({
+      code: control.code,
+      label: control.label,
+      status: control.status,
+      expected: control.expected ?? null,
+      observed: control.observed ?? null,
+      difference: control.difference ?? null,
+      tolerance: control.tolerance ?? null,
+      affected_fields: control.affected_fields || [],
+      message: control.message || "",
+    })),
+    compliance: compliance
+      ? {
+          can_validate: Boolean(compliance.can_validate),
+          pct: compliance.pct ?? 0,
+          blockers: compliance.blockers ?? 0,
+          warnings: compliance.warnings ?? 0,
+          summary: compliance.summary || "",
+          missing_fields: compliance.missing_fields || [],
+          conflicting_fields: compliance.conflicting_fields || [],
+          low_confidence_fields: compliance.low_confidence_fields || [],
+        }
+      : null,
+    effective_values: effective_values || null,
+  };
+
+  download(
+    new Blob([`${JSON.stringify(payload, null, 2)}\n`], { type: "application/json;charset=utf-8" }),
+    `RCC-${cleanFilePart(dossier.id)}-${cleanFilePart(dossier.client_name)}.json`,
+  );
+}
+
 export async function exportDossierPdf({ dossier, compliance, statusLabel }) {
   const [{ jsPDF }, { default: autoTable }] = await Promise.all([
     import("jspdf"),
