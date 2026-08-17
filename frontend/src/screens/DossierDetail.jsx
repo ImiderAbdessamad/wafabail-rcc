@@ -12,7 +12,6 @@ import Banner from "../components/detail/Banner.jsx";
 import CompliancePanel from "../components/detail/CompliancePanel.jsx";
 import FieldGroups from "../components/detail/FieldGroups.jsx";
 import ViewerPane from "../components/detail/ViewerPane.jsx";
-import { RejectModal, ValidatedModal } from "../components/detail/DetailModals.jsx";
 import { useSession } from "../hooks/useSession.jsx";
 import { useToasts } from "../hooks/useToasts.jsx";
 
@@ -34,8 +33,6 @@ export default function DossierDetail({ onDossierChanged }) {
   const [targetCode, setTargetCode] = useState(null);
   const [savingCodes, setSavingCodes] = useState(new Set());
   const [formOnly, setFormOnly] = useState(false);
-  const [modal, setModal] = useState(null); // "reject" | "validated"
-  const [busyAction, setBusyAction] = useState(null);
 
   const pendingEdits = useRef(new Map()); // code → valeur en attente
   const timers = useRef(new Map());
@@ -215,32 +212,6 @@ export default function DossierDetail({ onDossierChanged }) {
     [data?.dossier.has_document]
   );
 
-  const patchDossier = useCallback(
-    async (payload, { successTitle, successText }) => {
-      try {
-        const updated = await api.dossiers.patch(dossierId, payload);
-        setData(updated);
-        onDossierChanged?.(updated.dossier);
-        toast(successText, { title: successTitle, type: "ok" });
-        return updated;
-      } catch (err) {
-        if (!err.isAuth) toast(err.message, { title: "Action impossible", type: "bad" });
-        return null;
-      }
-    },
-    [dossierId, onDossierChanged, toast]
-  );
-
-  async function onValidate() {
-    setBusyAction("validate");
-    const updated = await patchDossier(
-      { status: "validated" },
-      { successTitle: "Dossier validé", successText: `${dossierId} a été transmis au modèle EKIP.` }
-    );
-    setBusyAction(null);
-    if (updated) setModal("validated");
-  }
-
   async function onExport(kind) {
     flushAll();
     const statusLabel = (STATUS_META[data.dossier.status] || STATUS_META.pending).label;
@@ -375,34 +346,6 @@ export default function DossierDetail({ onDossierChanged }) {
               Rapport PDF
             </button>
           </div>
-          <span className="detail-action-divider" aria-hidden="true" />
-          <div className="detail-action-group" aria-label="Décision analyste">
-            <button
-              type="button"
-              className="btn btn-danger"
-              disabled={dossier.status === "rejected"}
-              onClick={() => setModal("reject")}
-            >
-              Rejeter
-            </button>
-            <button
-              type="button"
-              className={`btn ${compliance.can_validate ? "btn-ok" : "btn-ghost"} hint${busyAction === "validate" ? " is-busy" : ""}`}
-              disabled={!compliance.can_validate || dossier.status === "validated" || busyAction === "validate"}
-              data-hint={
-                dossier.status === "validated"
-                  ? "Ce dossier est déjà validé"
-                  : compliance.can_validate
-                    ? "Transmettre les postes RCC au modèle EKIP"
-                    : `${pluralize(compliance.blockers, "règle")} de conformité bloquante(s) à lever avant validation`
-              }
-              onClick={onValidate}
-            >
-              <Icon paths={ICONS.check} size={14} width={2.4} />
-              <span className="btn-label">Valider le dossier</span>
-              <span className="btn-spinner" aria-hidden="true" />
-            </button>
-          </div>
         </div>
       </header>
 
@@ -511,26 +454,6 @@ export default function DossierDetail({ onDossierChanged }) {
         </div>
       </div>
 
-      <RejectModal
-        open={modal === "reject"}
-        dossier={dossier}
-        onClose={() => setModal(null)}
-        onConfirm={async ({ motif, comment }) => {
-          const updated = await patchDossier(
-            { status: "rejected", motif, comment },
-            { successTitle: "Dossier rejeté", successText: `${dossier.id} retourne au gestionnaire.` }
-          );
-          if (updated) navigate("/dossiers");
-          return Boolean(updated);
-        }}
-      />
-
-      <ValidatedModal
-        open={modal === "validated"}
-        dossier={dossier}
-        compliance={compliance}
-        onClose={() => { setModal(null); navigate("/dossiers"); }}
-      />
     </section>
   );
 }
