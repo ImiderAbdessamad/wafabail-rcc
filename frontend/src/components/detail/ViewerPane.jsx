@@ -71,14 +71,36 @@ export default function ViewerPane({
 
 function DocumentTab({ dossier, activeCode, activeEvidencePage, onFocusField }) {
   const fileUrl = api.dossiers.fileUrl(dossier.id);
+  const exercise = dossier.result?.document?.exercise;
+  const filename = dossier.filename || dossier.id;
+  const filenameFullYear = filename.match(/\b(?:19|20)\d{2}\b/)?.[0];
+  const filenameShortYear = filename.match(/\bFY[\s_-]?(\d{2})\b/i)?.[1];
+  const filenameYear = filenameFullYear || (filenameShortYear ? `20${filenameShortYear}` : null);
+  const exerciseValue = exercise?.fin || exercise?.label || dossier.exercice_date || exercise?.debut || filenameYear;
+  const exerciseYears = String(exerciseValue || "").match(/\b(?:19|20)\d{2}\b/g) || [];
+  const exerciseYear = exerciseYears[exerciseYears.length - 1] || exerciseValue;
+  const documentEvidence = exerciseYear
+    ? [{
+        code: "DOCUMENT_EXERCISE",
+        label: "Exercice comptable",
+        raw_value: String(exerciseYear),
+        page_number: null,
+        confidence: null,
+        status: "context",
+        kind: "exercise",
+        match_value_only: true,
+        focusable: false,
+      }]
+    : [];
 
   return (
     <div className="pane-body">
       <Suspense fallback={<div className="pdf-viewer-loading"><span className="pdf-loader" aria-hidden="true" />Initialisation du lecteur PDF…</div>}>
         <PdfEvidenceViewer
           fileUrl={fileUrl}
-          filename={dossier.filename || dossier.id}
+          filename={filename}
           fields={dossier.result?.fields ?? []}
+          documentEvidence={documentEvidence}
           activeCode={activeCode}
           activeEvidencePage={activeEvidencePage}
           onFocusField={onFocusField}

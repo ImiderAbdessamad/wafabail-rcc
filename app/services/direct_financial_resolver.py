@@ -292,6 +292,9 @@ def to_mapping_candidate(candidate: DirectFinancialCandidate) -> FinancialCandid
             column_name=candidate.evidence.column_name,
             column_role=_map_column_role(candidate.evidence.column_role),  # type: ignore[arg-type]
             source_excerpt=candidate.evidence.source_excerpt[:240],
+            extraction_method=candidate.evidence.extraction_method,
+            engine=candidate.evidence.engine,
+            orientation=candidate.evidence.orientation,
         )
         return FinancialCandidate(
             field_code=field_code,
@@ -310,7 +313,7 @@ def to_mapping_candidate(candidate: DirectFinancialCandidate) -> FinancialCandid
 def dedupe_direct_candidates(
     candidates: list[DirectFinancialCandidate],
 ) -> list[DirectFinancialCandidate]:
-    seen: set[tuple[str, str, str, str]] = set()
+    seen: set[tuple[str, str, str, str, str]] = set()
     unique: list[DirectFinancialCandidate] = []
     for candidate in candidates:
         key = (
@@ -318,6 +321,7 @@ def dedupe_direct_candidates(
             candidate.period,
             normalize_label(candidate.evidence.raw_label),
             normalize_label(candidate.raw_value),
+            candidate.evidence.extraction_method,
         )
         if key in seen:
             continue
@@ -343,6 +347,9 @@ def _patch_provenance(
     for fv in resolved.values():
         new_prov: list[ValueProvenance] = []
         for prov in fv.provenance:
+            if prov.extraction_method not in {"qwen_mapping", "markdown_ocr"}:
+                new_prov.append(prov)
+                continue
             match = by_key.get(
                 (
                     fv.code if fv.code not in {"RESULTAT_NET_XIII", "RESULTAT_NET_XVI"} else "RESULTAT_NET",
@@ -365,11 +372,19 @@ def _patch_provenance(
             column_role = (
                 match.evidence.column_role if match else None
             )
+            extraction_method = (
+                match.evidence.extraction_method if match else "unknown"
+            )
+            engine = (
+                match.evidence.engine
+                if match and match.evidence.engine
+                else DIRECT_FINANCIAL_MODEL if extraction_method == "glm_direct_vision" else None
+            )
             new_prov.append(
                 prov.model_copy(
                     update={
-                        "extraction_method": "glm_direct_vision",
-                        "mapping_model": DIRECT_FINANCIAL_MODEL,
+                        "extraction_method": extraction_method,
+                        "mapping_model": engine,
                         "page_type": page_type,
                         "orientation": orientation,
                         "column_role": column_role,

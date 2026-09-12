@@ -1,31 +1,40 @@
 /* Lecteur PDF contrôlé : navigation page par page et surlignage des preuves OCR. */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { GlobalWorkerOptions, getDocument } from "pdfjs-dist/build/pdf.mjs";
-import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { GlobalWorkerOptions, getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
+import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 import Icon, { ICONS } from "../Icon.jsx";
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
-const PDFJS_ASSETS = {
-  wasmUrl: "/pdfjs/wasm/",
-  cMapUrl: "/pdfjs/cmaps/",
-  cMapPacked: true,
-  standardFontDataUrl: "/pdfjs/standard_fonts/",
-};
-
 const fold = (value) => String(value || "").normalize("NFD")
   .replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
 
-const ZOOM_MIN = 0.5;
-const ZOOM_MAX = 3;
-const ZOOM_STEP = 0.25;
-
-function clampZoom(value) {
-  return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(value * 100) / 100));
+function terms(evidence) {
+  const values = evidence.match_value_only
+    ? [evidence.raw_value]
+    : [evidence.raw_label, evidence.raw_value];
+  return values.map(fold).filter((term) => term.length >= 3);
 }
 
-export default function PdfEvidenceViewer({ fileUrl, filename, fields, activeCode, activeEvidencePage, onFocusField }) {
+function evidenceTone(evidence) {
+  if (evidence.kind === "exercise") return "context";
+  if (evidence.status === "missing" || evidence.status === "conflicting" || evidence.raw_value == null) return "low";
+  if ((evidence.confidence ?? 0) >= .8) return "high";
+  if ((evidence.confidence ?? 0) >= .6) return "medium";
+  return "low";
+}
+
+function evidenceState(tone, confidence, missing) {
+  if (tone === "context") return "Référence d'exercice";
+  if (missing) return "Preuve indisponible";
+  const score = confidence != null ? `${Math.round(confidence * 100)} %` : "non calculée";
+  if (tone === "high") return `Confiance élevée · ${score}`;
+  if (tone === "medium") return `Contrôle recommandé · ${score}`;
+  return `Contrôle requis · ${score}`;
+}
+
+export default function PdfEvidenceViewer({ fileUrl, filename, fields, documentEvidence = [], activeCode, activeEvidencePage, onFocusField }) {
   const canvasRef = useRef(null);
   const hostRef = useRef(null);
   const pdfRef = useRef(null);
@@ -41,11 +50,20 @@ export default function PdfEvidenceViewer({ fileUrl, filename, fields, activeCod
   const [showEvidence, setShowEvidence] = useState(true);
   const [importantCodes, setImportantCodes] = useState(() => new Set());
   const [rectangles, setRectangles] = useState([]);
-  const [zoom, setZoom] = useState(1);
 
-  const evidence = useMemo(() => (fields || []).flatMap((field) =>
-    (field.evidence || []).map((item) => ({ ...item, code: field.code, label: field.label }))
-  ), [fields]);
+  const evidence = useMemo(() => [
+    ...(fields || []).flatMap((field) =>
+      (field.evidence || []).map((item) => ({
+        ...item,
+        code: field.code,
+        label: field.label,
+        status: field.status,
+        confidence: item.confidence ?? field.confidence,
+        focusable: true,
+      }))
+    ),
+    ...documentEvidence,
+  ], [fields, documentEvidence]);
   const selectedEvidence = useMemo(() => evidence.find((item) => item.code === activeCode), [activeCode, evidence]);
 
   useEffect(() => {
@@ -55,55 +73,26 @@ export default function PdfEvidenceViewer({ fileUrl, filename, fields, activeCod
 
   useEffect(() => {
     let disposed = false;
-    const controller = new AbortController();
-    setStatus("loading");
-    setError(null);
-    setPageCount(0);
-
-    async function load() {
-      try {
-        const response = await fetch(fileUrl, {
-          credentials: "same-origin",
-          signal: controller.signal,
-        });
-        if (response.status === 401) {
-          throw new Error("Session expirée — reconnectez-vous pour afficher la liasse.");
-        }
-        if (response.status === 404) {
-          throw new Error("Aucune liasse n'est rattachée à ce dossier, ou le fichier a été déplacé.");
-        }
-        if (!response.ok) {
-          throw new Error(`Impossible de charger le PDF (erreur ${response.status}).`);
-        }
-        const buffer = await response.arrayBuffer();
-        if (disposed) return;
-        const task = getDocument({ data: new Uint8Array(buffer), ...PDFJS_ASSETS });
-        const pdf = await task.promise;
-        if (disposed) {
-          pdf.destroy();
-          return;
-        }
-        pdfRef.current = pdf;
-        setPageCount(pdf.numPages);
-        setPageNumber((current) => Math.min(Math.max(1, current), pdf.numPages));
-        setStatus("ready");
-      } catch (reason) {
-        if (disposed || reason?.name === "AbortError") return;
-        setError(
-          reason?.message
-          || "Le fichier est indisponible ou son format n'est pas pris en charge par ce navigateur."
-        );
+    const task = getDocument({ url: fileUrl, withCredentials: true });
+    setStatus("loading"); setError(null); setPageCount(0);
+    task.promise.then((pdf) => {
+      if (disposed) { pdf.destroy(); return; }
+      pdfRef.current = pdf;
+      setPageCount(pdf.numPages);
+      setPageNumber((current) => Math.min(Math.max(1, current), pdf.numPages));
+      setStatus("ready");
+    }).catch(() => {
+      if (!disposed) {
+        setError("Le fichier est indisponible ou son format n'est pas pris en charge par ce navigateur.");
         setStatus("error");
       }
-    }
-
-    load();
+    });
     return () => {
       disposed = true;
-      controller.abort();
       renderRef.current?.cancel?.();
       if (typeof pdfRef.current?.destroy === "function") pdfRef.current.destroy();
       pdfRef.current = null;
+      if (typeof task.destroy === "function") task.destroy();
     };
   }, [fileUrl, loadAttempt]);
 
@@ -133,7 +122,7 @@ export default function PdfEvidenceViewer({ fileUrl, filename, fields, activeCod
         renderRef.current?.cancel();
         const page = await pdf.getPage(pageNumber);
         const baseViewport = page.getViewport({ scale: 1 });
-        const viewport = page.getViewport({ scale: (pageWidth / baseViewport.width) * zoom });
+        const viewport = page.getViewport({ scale: pageWidth / baseViewport.width });
         const ratio = window.devicePixelRatio || 1;
         const context = canvas.getContext("2d", { alpha: false });
         canvas.width = Math.floor(viewport.width * ratio); canvas.height = Math.floor(viewport.height * ratio);
@@ -146,17 +135,38 @@ export default function PdfEvidenceViewer({ fileUrl, filename, fields, activeCod
         // navigateurs anciens ne savent pas l'extraire : le document doit rester visible.
         try {
           const text = await page.getTextContent();
-          const onPage = evidence.filter((item) => item.page_number === pageNumber);
+          const onPage = evidence.filter((item) => item.page_number == null || item.page_number === pageNumber);
           const found = [];
+          const seenDocumentCodes = new Set();
           for (const item of text.items || []) {
             const value = fold(item.str);
-            const matches = onPage.filter((source) => terms(source).some((term) => value.includes(term) || term.includes(value)));
+            const matches = onPage.filter((source) => {
+              if (source.kind && seenDocumentCodes.has(source.code)) return false;
+              return terms(source).some((term) => value.includes(term) || term.includes(value));
+            });
             if (!value || !matches.length) continue;
             const matrix = viewport.transform;
             const left = matrix[0] * item.transform[4] + matrix[2] * item.transform[5] + matrix[4];
             const bottom = matrix[1] * item.transform[4] + matrix[3] * item.transform[5] + matrix[5];
             const height = Math.max(9, Math.abs(item.transform[3] * viewport.scale));
-            found.push({ key: `${item.transform[4]}-${item.transform[5]}-${matches.map((match) => match.code).join("-")}`, left, top: bottom - height, width: Math.max(12, item.width * viewport.scale), height, codes: matches.map((match) => match.code), label: matches[0].label });
+            found.push({
+              key: `${item.transform[4]}-${item.transform[5]}-${matches.map((match) => match.code).join("-")}`,
+              left,
+              top: bottom - height,
+              width: Math.max(12, item.width * viewport.scale),
+              height,
+              codes: matches.map((match) => match.code),
+              label: matches[0].label,
+              rawValue: matches[0].raw_value,
+              confidence: matches[0].confidence,
+              tone: evidenceTone(matches[0]),
+              missing: matches[0].status === "missing" || matches[0].raw_value == null,
+              kind: matches[0].kind,
+              focusable: matches[0].focusable !== false,
+            });
+            for (const match of matches) {
+              if (match.kind) seenDocumentCodes.add(match.code);
+            }
           }
           if (!cancelled) setRectangles(found);
         } catch {
@@ -176,7 +186,7 @@ export default function PdfEvidenceViewer({ fileUrl, filename, fields, activeCod
     }
     render();
     return () => { cancelled = true; };
-  }, [evidence, pageNumber, pageWidth, status, zoom]);
+  }, [evidence, pageNumber, pageWidth, status]);
 
   const toggleImportant = useCallback(() => {
     if (!activeCode) return;
@@ -210,7 +220,18 @@ export default function PdfEvidenceViewer({ fileUrl, filename, fields, activeCod
           {rendering ? <div className="pdf-rendering"><span className="pdf-loader" aria-hidden="true" />Rendu de la page…</div> : null}
           {showEvidence ? <div className="pdf-highlights" aria-label="Preuves OCR surlignées">{rectangles.map((rect) => {
             const active = rect.codes.includes(activeCode); const important = rect.codes.some((code) => importantCodes.has(code));
-            return <button key={rect.key} type="button" className={`pdf-highlight${active ? " is-active" : ""}${important ? " is-important" : ""}`} style={{ left: rect.left, top: rect.top, width: rect.width, height: rect.height }} title={`Preuve OCR : ${rect.label}`} aria-label={`Voir ${rect.label} dans le formulaire`} onClick={() => onFocusField(rect.codes[0], { openDoc: false, pageNumber })} />;
+            const state = evidenceState(rect.tone, rect.confidence, rect.missing);
+            const ariaLabel = rect.focusable
+              ? `Voir ${rect.label} dans le formulaire, ${state}`
+              : `${rect.label}, ${rect.rawValue}, ${state}`;
+            return <button key={rect.key} type="button" className={`pdf-highlight is-${rect.tone}${active ? " is-active" : ""}${important ? " is-important" : ""}`} style={{ left: rect.left, top: rect.top, width: rect.width, height: rect.height }} aria-label={ariaLabel} onClick={rect.focusable ? () => onFocusField(rect.codes[0], { openDoc: false, pageNumber }) : undefined}>
+              <span className="pdf-hover-card" aria-hidden="true">
+                <span className="pdf-hover-card-head"><i />{state}</span>
+                <strong>{rect.label}</strong>
+                <span className="pdf-hover-card-value">{rect.missing ? "Non renseignée" : rect.rawValue}</span>
+                <small>{rect.focusable ? "Cliquer pour ouvrir dans le formulaire" : "Année de référence du document"}</small>
+              </span>
+            </button>;
           })}</div> : null}
         </div>
         {status === "ready" && highlightWarning ? <p className="pdf-inline-warning">{highlightWarning}</p> : null}
@@ -220,11 +241,6 @@ export default function PdfEvidenceViewer({ fileUrl, filename, fields, activeCod
       <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Page précédente" disabled={pageNumber <= 1} onClick={() => setPageNumber((page) => Math.max(1, page - 1))}><Icon paths={ICONS.chevronLeft} size={15} width={2} /></button>
       <span>{pageCount ? `Page ${pageNumber}` : ""}</span>
       <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Page suivante" disabled={!pageCount || pageNumber >= pageCount} onClick={() => setPageNumber((page) => Math.min(pageCount, page + 1))}><Icon paths={ICONS.chevronRight} size={15} width={2} /></button>
-      <span className="pdf-zoom" role="group" aria-label="Zoom">
-        <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Zoom arrière" disabled={status !== "ready" || zoom <= ZOOM_MIN} onClick={() => setZoom((current) => clampZoom(current - ZOOM_STEP))}><Icon paths={ICONS.minus} size={15} width={2} /></button>
-        <button type="button" className="pdf-zoom-label" title="Revenir à la largeur de la page" disabled={status !== "ready"} onClick={() => setZoom(1)}>{Math.round(zoom * 100)} %</button>
-        <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Zoom avant" disabled={status !== "ready" || zoom >= ZOOM_MAX} onClick={() => setZoom((current) => clampZoom(current + ZOOM_STEP))}><Icon paths={ICONS.plus} size={15} width={2} /></button>
-      </span>
     </div>
   </div>;
 }

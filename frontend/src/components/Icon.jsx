@@ -7,6 +7,7 @@ export const ICONS = {
   chevronRight: ["m9 18 6-6-6-6"],
   eye: ["M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z", "M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"],
   pencil: ["M12 20h9", "M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"],
+  trash: ["M3 6h18", "M8 6V4h8v2", "M19 6l-1 14H6L5 6", "M10 11v5", "M14 11v5"],
   lock: ["M7 11V7a5 5 0 0 1 10 0v4", "M5 11h14a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1Z"],
   highlight: ["m9 11-6 6v3h3l6-6", "m17 3 4 4-9 9-4-4Z"],
   upload: ["M12 16V4", "m7 9 5-5 5 5", "M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"],
@@ -18,8 +19,6 @@ export const ICONS = {
   clipboardCheck: ["M9 11l2 2 4-4", "M5 3h14a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"],
   history: ["M3 12a9 9 0 1 0 3-6.7L3 8", "M3 3v5h5", "M12 7v5l3 2"],
   search: ["M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z", "m21 21-4.35-4.35"],
-  plus: ["M12 5v14", "M5 12h14"],
-  minus: ["M5 12h14"],
 };
 
 export default function Icon({ paths, size = 16, width = 2, className, style }) {

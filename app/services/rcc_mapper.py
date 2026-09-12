@@ -20,6 +20,7 @@ from app.schemas.rcc import (
     RccAnalysisResult,
     RccField,
 )
+from app.schemas.scoring import ScoringSummary
 
 # Libellés métier des contrôles de app.services.financial_controls
 CONTROL_LABELS: dict[str, str] = {
@@ -116,6 +117,10 @@ def _evidence(fv: FinancialValue | None, *, limit: int = 6) -> list[FieldEvidenc
                     page_type=p.page_type,
                     confidence=conf or None,
                     source_excerpt=p.source_excerpt,
+                    extraction_method=p.extraction_method,
+                    engine=p.mapping_model,
+                    orientation=p.orientation,
+                    column_role=p.column_role,
                 ),
             )
         )
@@ -159,6 +164,7 @@ def build_rcc_result(
     dataset: FinancialDataset,
     warnings: list[str] | None = None,
     accounting_checks: list[AccountingControlResult] | None = None,
+    scoring: ScoringSummary | None = None,
 ) -> RccAnalysisResult:
     """Construit la réponse RCC (uniquement les postes EKIP)."""
     resolved: dict[
@@ -267,6 +273,7 @@ def build_rcc_result(
         completeness_pct=completeness,
         warnings=list(warnings or []),
         controls=_control_views(accounting_checks),
+        scoring=scoring,
     )
 
 

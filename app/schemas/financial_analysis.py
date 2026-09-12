@@ -22,6 +22,7 @@ RatioStatus = Literal[
     "conforme",
     "a_surveiller",
     "non_conforme",
+    "informatif",
     "non_calculable",
 ]
 

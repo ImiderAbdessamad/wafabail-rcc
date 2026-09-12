@@ -291,6 +291,36 @@ def update_dossier(
     return get_dossier(dossier_id)
 
 
+def delete_dossier(dossier_id: str) -> bool:
+    """Supprime un dossier et, lorsqu'il existe, son PDF stocké localement.
+
+    Les corrections et événements associés sont supprimés par les clés étrangères
+    ``ON DELETE CASCADE``. Le fichier n'est retiré que s'il se trouve bien dans le
+    répertoire PDF configuré, afin de ne jamais effacer un chemin arbitraire.
+    """
+    from app.db import cursor
+
+    with cursor(commit=True) as cur:
+        cur.execute("SELECT pdf_path FROM dossiers WHERE id = ?", (dossier_id,))
+        row = cur.fetchone()
+        if row is None:
+            return False
+        pdf_path = row["pdf_path"]
+        cur.execute("DELETE FROM dossiers WHERE id = ?", (dossier_id,))
+
+    if pdf_path:
+        path = Path(pdf_path)
+        storage_root = Path(PDF_STORAGE_DIR).resolve()
+        try:
+            resolved = path.resolve()
+            if resolved.is_relative_to(storage_root) and resolved.is_file():
+                resolved.unlink()
+        except OSError:
+            logger.exception("Impossible de supprimer le PDF du dossier %s.", dossier_id)
+
+    return True
+
+
 def save_overrides(
     dossier_id: str,
     *,
@@ -561,5 +591,8 @@ def effective_values(detail: DossierDetail) -> dict[str, float | None]:
     if detail.result:
         values = {f.code: f.value for f in detail.result.fields}
     for override in detail.overrides:
-        values[override.field_code] = override.corrected_value
+        # Legacy confirmations may carry a NULL corrected_value.  A
+        # verification confirms the OCR value; it must never blank it.
+        if override.corrected_value is not None:
+            values[override.field_code] = override.corrected_value
     return values

@@ -60,6 +60,8 @@ class DirectFinancialEvidence(BaseModel):
     column_role: ColumnRole
     source_excerpt: str = Field(min_length=1, max_length=240)
     orientation: OrientationDegrees = 0
+    extraction_method: str = Field(default="glm_direct_vision", max_length=64)
+    engine: str | None = Field(default=None, max_length=100)
 
 
 class DirectFinancialCandidate(BaseModel):
@@ -82,6 +84,16 @@ class FinancialPageAudit(BaseModel):
     model_latency_ms: int | None = None
     warnings: list[str] = Field(default_factory=list)
     error: str | None = None
+    source_kind: str | None = None
+    route: str | None = None
+    orientation_method: str | None = None
+    orientation_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    native_chars: int = 0
+    local_ocr_chars: int = 0
+    local_ocr_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    local_ocr_status: str | None = None
+    inverted: bool = False
+    docling_status: str | None = None
 
 
 class DirectFinancialExtractionBatch(BaseModel):
@@ -418,6 +430,11 @@ class ExtractionSummary(BaseModel):
     model: str
     page_audit: list[FinancialPageAudit] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    pipeline: str = "glm_direct"
+    source_kind: str | None = None
+    engines: list[str] = Field(default_factory=list)
+    docling_status: str | None = None
+    docling_latency_ms: int | None = None
 
 
 class FinancialDocumentAnalysisResult(BaseModel):

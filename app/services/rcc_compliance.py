@@ -280,7 +280,8 @@ def build_compliance(detail: DossierDetail) -> ComplianceReport:
     # --- Identités recalculées sur les valeurs corrigées ---------------------
     values = {f.code: f.value for f in (result.fields if result else [])}
     for code, override in overrides.items():
-        values[code] = override.corrected_value
+        if override.corrected_value is not None:
+            values[code] = override.corrected_value
 
     for label, operator, left_codes, right_codes in RCC_IDENTITIES:
         left_vals = [values.get(c) for c in left_codes]

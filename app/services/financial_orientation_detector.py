@@ -26,7 +26,8 @@ def _score_orientation(image: Image.Image) -> float:
     gray = ImageOps.grayscale(sample)
     edges = gray.filter(ImageFilter.FIND_EDGES)
     # Projection horizontale vs verticale des pixels de bord
-    pixels = list(edges.getdata())
+    get_pixels = getattr(edges, "get_flattened_data", edges.getdata)
+    pixels = list(get_pixels())
     w, h = edges.size
     if w < 8 or h < 8:
         return 0.0
@@ -100,6 +101,32 @@ def detect_page_orientation(
         best,
     )
     return best  # type: ignore[return-value]
+
+
+def rank_page_orientations(
+    image_bytes: bytes,
+    *,
+    declared_rotation: int | None = None,
+) -> list[tuple[OrientationDegrees, float]]:
+    """Retourne les quatre orientations classÃ©es, sans masquer l'incertitude.
+
+    Le pipeline hybride utilise ce classement comme secours lorsque l'OCR
+    sÃ©mantique local n'est pas disponible. `declared_rotation` doit rester
+    `None` quand l'image vient de PyMuPDF, car son rendu applique dÃ©jÃ  la
+    rotation dÃ©clarÃ©e par la page PDF.
+    """
+    base = _to_rgb(image_bytes)
+    scores: dict[OrientationDegrees, float] = {}
+    for angle in _CANDIDATES:
+        rotated = base if angle == 0 else base.rotate(-angle, expand=True)
+        scores[angle] = _score_orientation(rotated)
+
+    if declared_rotation is not None:
+        declared = int(declared_rotation) % 360
+        if declared in scores:
+            scores[declared] *= 1.15  # type: ignore[index]
+
+    return sorted(scores.items(), key=lambda item: item[1], reverse=True)
 
 
 def rotate_to_orientation(image_bytes: bytes, orientation: int) -> bytes:

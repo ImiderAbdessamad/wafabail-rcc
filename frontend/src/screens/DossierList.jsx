@@ -6,6 +6,7 @@ import * as api from "../lib/api.js";
 import { STATUS_META } from "../lib/fields.js";
 import { formatAmountMad, formatDate, pluralize } from "../lib/format.js";
 import Icon, { ICONS } from "../components/Icon.jsx";
+import Modal, { BusyButton } from "../components/Modal.jsx";
 import { Badge, EmptyState, ErrorState, SkeletonRows } from "../components/States.jsx";
 import { TopBar } from "../components/AppShell.jsx";
 import { useDebouncedValue } from "../hooks/index.js";
@@ -21,7 +22,7 @@ const FILTERS = [
 
 export default function DossierList({ activeId }) {
   const navigate = useNavigate();
-  const { announce } = useToasts();
+  const { announce, toast } = useToasts();
   const [params, setParams] = useSearchParams();
 
   const status = params.get("statut") || "pending";
@@ -31,6 +32,8 @@ export default function DossierList({ activeId }) {
   const [data, setData] = useState({ items: [], counts: {} });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const abortRef = useRef(null);
 
   const load = useCallback(async () => {
@@ -80,16 +83,35 @@ export default function DossierList({ activeId }) {
     setParams(next, { replace: true });
   }
 
+  async function confirmDelete() {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    try {
+      await api.dossiers.remove(deleteTarget.id);
+      const deletedId = deleteTarget.id;
+      setDeleteTarget(null);
+      toast(`Le dossier ${deletedId} et son document associé ont été supprimés.`, {
+        title: "Suppression terminée",
+        type: "ok",
+      });
+      await load();
+    } catch (err) {
+      toast(err.message, { title: "Suppression impossible", type: "bad", timeout: 7000 });
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   const counts = data.counts || {};
   const searching = Boolean(debouncedSearch.trim());
   const hiddenByFilter = searching && status !== "all";
   const filterLabel = FILTERS.find((f) => f.key === status)?.label ?? "";
 
   const stats = [
-    { label: "En attente de validation", value: counts.pending ?? 0, note: "dossiers", tone: "is-warn" },
-    { label: "Validés", value: counts.validated ?? 0, note: "transmis EKIP", tone: "is-ok" },
-    { label: "Rejetés", value: counts.rejected ?? 0, note: "retournés", tone: "is-bad" },
-    { label: "En arbitrage", value: counts.escalated ?? 0, note: "superviseur", tone: "is-accent" },
+    { status: "pending", label: "En attente de validation", value: counts.pending ?? 0, note: "dossiers", tone: "is-warn" },
+    { status: "validated", label: "Validés", value: counts.validated ?? 0, note: "transmis EKIP", tone: "is-ok" },
+    { status: "rejected", label: "Rejetés", value: counts.rejected ?? 0, note: "retournés", tone: "is-bad" },
+    { status: "escalated", label: "En arbitrage", value: counts.escalated ?? 0, note: "superviseur", tone: "is-accent" },
   ];
 
   return (
@@ -107,13 +129,20 @@ export default function DossierList({ activeId }) {
         <div className="wrap">
           <div className="stats">
             {stats.map((card) => (
-              <div className="stat" key={card.label}>
+              <button
+                type="button"
+                className={`stat ${card.tone}${status === card.status ? " is-selected" : ""}`}
+                key={card.label}
+                aria-pressed={status === card.status}
+                onClick={() => setStatus(card.status)}
+              >
                 <p className="stat-label">{card.label}</p>
                 <div className="stat-row">
                   <span className={`stat-value ${card.tone}`}>{card.value}</span>
                   <span className="stat-note">{card.note}</span>
                 </div>
-              </div>
+                <span className="stat-link">Afficher la file</span>
+              </button>
             ))}
           </div>
 
@@ -169,6 +198,7 @@ export default function DossierList({ activeId }) {
                   <span role="columnheader" className="c-name">Client / Raison sociale</span>
                   <span role="columnheader" className="c-date">Date d'exercice</span>
                   <span role="columnheader" className="c-amount">Crédit demandé</span>
+                  <span role="columnheader" className="c-quality">Qualité RCC</span>
                   <span role="columnheader" className="c-status">Statut du dossier</span>
                   <span role="columnheader" className="c-actions">Actions</span>
                 </div>
@@ -211,6 +241,7 @@ export default function DossierList({ activeId }) {
                         dossier={dossier}
                         active={dossier.id === activeId}
                         onOpen={() => navigate(`/validation/${encodeURIComponent(dossier.id)}`)}
+                        onDelete={() => setDeleteTarget(dossier)}
                       />
                     ))
                   )}
@@ -220,11 +251,61 @@ export default function DossierList({ activeId }) {
           </div>
         </div>
       </div>
+
+      <Modal
+        open={Boolean(deleteTarget)}
+        onClose={() => setDeleteTarget(null)}
+        labelledBy="deleteDossierTitle"
+        dismissible={!deleting}
+        className="delete-modal"
+      >
+        <div className="delete-modal-icon" aria-hidden="true">
+          <Icon paths={ICONS.trash} size={22} width={1.8} />
+        </div>
+        <h2 className="modal-title" id="deleteDossierTitle">Supprimer le dossier</h2>
+        <p className="modal-sub">
+          Vous êtes sur le point de supprimer définitivement le dossier
+          {deleteTarget ? ` ${deleteTarget.id}` : ""}.
+        </p>
+        {deleteTarget ? (
+          <div className="delete-modal-recap">
+            <span>
+              <strong>{deleteTarget.client_name || "Client non renseigné"}</strong>
+              <small>{deleteTarget.id}</small>
+            </span>
+            <Badge tone={deleteTarget.has_document ? "bad" : "neutral"} className="badge-xs">
+              {deleteTarget.has_document ? "PDF inclus" : "Sans PDF"}
+            </Badge>
+          </div>
+        ) : null}
+        <p className="delete-modal-warning">
+          Le PDF, les corrections et l'historique associés seront également supprimés.
+          Cette action est irréversible.
+        </p>
+        <div className="modal-actions">
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => setDeleteTarget(null)}
+            disabled={deleting}
+            data-autofocus=""
+          >
+            Annuler
+          </button>
+          <BusyButton
+            busy={deleting}
+            className="btn btn-danger-solid"
+            onClick={confirmDelete}
+          >
+            Supprimer définitivement
+          </BusyButton>
+        </div>
+      </Modal>
     </section>
   );
 }
 
-function DossierRow({ dossier, active, onOpen }) {
+function DossierRow({ dossier, active, onOpen, onDelete }) {
   const meta = STATUS_META[dossier.status] || STATUS_META.pending;
   const tone = meta.cls.replace("badge-", "");
 
@@ -261,6 +342,16 @@ function DossierRow({ dossier, active, onOpen }) {
       <span className="c-date row-date" role="cell">{formatDate(dossier.exercice_date)}</span>
       <span className="c-amount row-amount" role="cell">{formatAmountMad(dossier.credit_amount)}</span>
 
+      <span className="c-quality" role="cell">
+        <span className="quality-line">
+          <span>{Math.round(dossier.completeness_pct)} %</span>
+          <span>{dossier.override_count ? `${dossier.override_count} revu(s)` : "OCR"}</span>
+        </span>
+        <span className="quality-track" aria-label={`Complétude RCC ${Math.round(dossier.completeness_pct)} %`}>
+          <span style={{ width: `${Math.max(0, Math.min(100, dossier.completeness_pct))}%` }} />
+        </span>
+      </span>
+
       <span className="c-status" role="cell">
         <Badge tone={tone} dot>{meta.label}</Badge>
       </span>
@@ -287,6 +378,15 @@ function DossierRow({ dossier, active, onOpen }) {
           onClick={(event) => { event.stopPropagation(); onOpen(); }}
         >
           <Icon paths={ICONS.pencil} size={13} width={1.8} style={{ stroke: "#B45309" }} />
+        </button>
+        <button
+          type="button"
+          className="btn-icon btn-icon-danger hint"
+          data-hint="Supprimer le dossier"
+          aria-label={`Supprimer ${dossier.id}`}
+          onClick={(event) => { event.stopPropagation(); onDelete(); }}
+        >
+          <Icon paths={ICONS.trash} size={13} width={1.8} />
         </button>
       </span>
     </div>

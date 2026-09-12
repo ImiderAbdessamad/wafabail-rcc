@@ -1,27 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { cpSync, mkdirSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
-
-const root = fileURLToPath(new URL(".", import.meta.url));
-const publicPdfjs = fileURLToPath(new URL("./public/pdfjs", import.meta.url));
-
-/**
- * PDF.js 5+ charge JBIG2 / JPEG2000 depuis des fichiers WASM. Sans eux, les
- * liasses scannées (cas le plus fréquent) échouent silencieusement.
- */
-function copyPdfjsAssets() {
-  mkdirSync(publicPdfjs, { recursive: true });
-  for (const folder of ["wasm", "cmaps", "standard_fonts"]) {
-    cpSync(
-      `${root}/node_modules/pdfjs-dist/${folder}`,
-      `${publicPdfjs}/${folder}`,
-      { recursive: true },
-    );
-  }
-}
-
-copyPdfjsAssets();
 
 /**
  * Le build alimente `static/`, servi tel quel par FastAPI (main.py monte
@@ -39,7 +18,9 @@ export default defineConfig({
   build: {
     outDir: fileURLToPath(new URL("../static", import.meta.url)),
     emptyOutDir: true,
-    sourcemap: true,
+    // Production source maps duplicate the frontend source and are not
+    // needed by the FastAPI deployment artifact.
+    sourcemap: false,
     rollupOptions: {
       output: {
         // Empreinte dans le nom de fichier : plus de modules ES servis depuis

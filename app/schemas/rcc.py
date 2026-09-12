@@ -10,6 +10,7 @@ from app.schemas.direct_financial_extraction import (
     ExtractionSummary,
     JobStatus,
 )
+from app.schemas.scoring import ScoringSummary
 
 # Référentiel métier RCC (enrichissement EKIP)
 RCC_ELEMENTS: list[tuple[int, str, str, str]] = [
@@ -46,6 +47,10 @@ class FieldEvidence(BaseModel):
     page_type: Optional[str] = None
     confidence: Optional[float] = None
     source_excerpt: Optional[str] = None
+    extraction_method: Optional[str] = None
+    engine: Optional[str] = None
+    orientation: Optional[int] = None
+    column_role: Optional[str] = None
 
 
 class RccField(BaseModel):
@@ -89,6 +94,7 @@ class RccAnalysisResult(BaseModel):
     completeness_pct: float = 0.0
     warnings: list[str] = Field(default_factory=list)
     controls: list[AccountingControlView] = Field(default_factory=list)
+    scoring: ScoringSummary | None = None
 
 
 class RccJobCreateResponse(BaseModel):

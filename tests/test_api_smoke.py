@@ -21,6 +21,7 @@ from main import app
 from app.services.financial_job_store import job_store
 from app.schemas.rcc import RccAnalysisResult, RccField, FieldEvidence, AccountingControlView, RCC_ELEMENTS
 from app.schemas.direct_financial_extraction import DocumentSummary, ExtractionSummary, CompanyInfo, ExerciseInfo
+from app.schemas.scoring import ScoringSummary
 
 def make_result():
     fields = []
@@ -55,6 +56,7 @@ def make_result():
             AccountingControlView(code="resultat_net", status="passed", label="RN cohérent",
                                   expected=19000.0, observed=19000.0, difference=0.0, message="ok"),
         ],
+        scoring=ScoringSummary(total_ratio_count=12, calculable_ratio_count=8),
     )
 
 c = TestClient(app)
@@ -70,6 +72,7 @@ def ok(name, cond, extra=""):
 
 # --- auth
 r = c.get("/api/v1/rcc/dossiers"); ok("401 sans session", r.status_code == 401, r.status_code)
+r = c.get("/api/v1/scoring/jobs/unknown/result"); ok("401 scoring sans session", r.status_code == 401, r.status_code)
 r = c.post("/api/v1/auth/login", json={"username": "x@y.z", "password": "bad"})
 ok("401 mauvais identifiants", r.status_code == 401, r.status_code)
 r = c.post("/api/v1/auth/login", json={"username": "analyste@wafabail.ma", "password": "wafabail2026"})
@@ -84,6 +87,23 @@ job = job_store.create(pdf_bytes=b"%PDF-1.4 fake", filename="Bilan_TEST_2025.pdf
 from app.services.dossier_store import store_pdf
 store_pdf(job.job_id, b"%PDF-1.4 fake")
 job_store.update(job.job_id, status="completed", result=make_result())
+
+r = c.get(f"/api/v1/scoring/jobs/{job.job_id}/result")
+ok(
+    "vue scoring partage le job RCC",
+    r.status_code == 200
+    and r.json()["scoring"]["policy_status"] == "unapproved_reference"
+    and r.json()["scoring"]["score"] is None,
+    r.text[:400],
+)
+r = c.get(f"/api/v1/scoring/jobs/{job.job_id}")
+ok(
+    "progression scoring expose ses URLs",
+    r.status_code == 200
+    and "/scoring/" in r.json()["result_url"]
+    and "/scoring/" in r.json()["stream_url"],
+    r.text[:400],
+)
 
 r = c.post("/api/v1/rcc/dossiers", json={"job_id": job.job_id, "credit_amount": 4200000, "sector": "Industrie"})
 ok("création dossier", r.status_code == 201, r.text[:400])
@@ -184,11 +204,35 @@ ok("compteurs par statut", cnt["rejected"] == 1 and cnt["all"] == 1, cnt)
 # --- PDF
 r = c.get(f"/api/v1/rcc/dossiers/{did}/file")
 ok("PDF servi", r.status_code == 200 and r.content.startswith(b"%PDF"), r.status_code)
+
+# --- exports RCC
+r = c.get(f"/api/v1/rcc/dossiers/{did}/export.csv")
+csv_text = r.content.decode("utf-8-sig") if r.status_code == 200 else ""
+ok(
+    "CSV RCC exporté",
+    r.status_code == 200
+    and csv_text.startswith("sep=;\r\nrecord_type;")
+    and "rcc_field" in csv_text
+    and "accounting_control" in csv_text
+    and "financial_ratio" not in csv_text,  # le fixture annonce les ratios mais n'en invente aucun
+    r.status_code,
+)
+ok("CSV téléchargement privé", r.headers.get("cache-control") == "no-store", r.headers)
+
+r = c.get(f"/api/v1/rcc/dossiers/{did}/export.pdf")
+ok(
+    "rapport PDF RCC exporté",
+    r.status_code == 200
+    and r.content.startswith(b"%PDF")
+    and "attachment" in r.headers.get("content-disposition", ""),
+    r.status_code,
+)
 ok("404 dossier inconnu", c.get("/api/v1/rcc/dossiers/RCC-1900-0001").status_code == 404)
 
 # --- logout
 c.post("/api/v1/auth/logout")
 ok("401 après logout", c.get("/api/v1/rcc/dossiers").status_code == 401)
+ok("401 export après logout", c.get(f"/api/v1/rcc/dossiers/{did}/export.csv").status_code == 401)
 
 shutil.rmtree(TMP, ignore_errors=True)
 print(f"\n{FAILURES} échec(s)." if FAILURES else "\nToutes les vérifications passent.")

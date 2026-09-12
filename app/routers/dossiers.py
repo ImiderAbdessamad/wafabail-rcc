@@ -5,10 +5,11 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from app.schemas.dossier import (
+    AnalystFieldValue,
     AuditResponse,
     DossierCreateRequest,
     DossierDetail,
@@ -18,10 +19,13 @@ from app.schemas.dossier import (
     FieldOverrideBatchRequest,
     SessionUser,
 )
+from app.schemas.rcc import RCC_ELEMENTS
 from app.services import dossier_store
 from app.services.auth import require_analyst
 from app.services.financial_job_store import job_store
 from app.services.rcc_compliance import ComplianceReport, build_compliance
+from app.services.rcc_export import build_rcc_csv, safe_export_stem
+from app.services.rcc_pdf_export import build_rcc_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +114,44 @@ async def get_dossier(
     return _to_response(_detail_or_404(dossier_id))
 
 
+@router.get("/{dossier_id}/values", response_model=list[AnalystFieldValue])
+async def get_analyst_values(
+    dossier_id: str,
+    _user: SessionUser = Depends(require_analyst),
+) -> list[AnalystFieldValue]:
+    """Retourne uniquement les postes et leurs valeurs effectives.
+
+    ``value`` contient la correction analyste lorsqu'elle existe, sinon la
+    valeur OCR. Le résultat complet, les preuves brutes et les détails internes
+    du pipeline restent volontairement exclus de cette vue.
+    """
+    detail = _detail_or_404(dossier_id)
+    extracted = {field.code: field for field in detail.result.fields} if detail.result else {}
+    effective = dossier_store.effective_values(detail)
+    fields: list[AnalystFieldValue] = []
+
+    for _, code, label, category in RCC_ELEMENTS:
+        source_field = extracted.get(code)
+        value: float | str | None = effective.get(code)
+        unit: str | None = source_field.unit if source_field else "MAD"
+
+        if code == "TYPE_RESULTAT" and source_field and source_field.note:
+            value = source_field.note
+            unit = None
+
+        fields.append(
+            AnalystFieldValue(
+                code=code,
+                label=label,
+                category=category,
+                value=value,
+                unit=unit,
+            )
+        )
+
+    return fields
+
+
 @router.patch("/{dossier_id}", response_model=DossierDetailResponse)
 async def patch_dossier(
     dossier_id: str,
@@ -142,6 +184,17 @@ async def patch_dossier(
     if updated is None:
         raise HTTPException(status_code=404, detail="Dossier introuvable.")
     return _to_response(updated)
+
+
+@router.delete("/{dossier_id}", status_code=204)
+async def delete_dossier(
+    dossier_id: str,
+    _user: SessionUser = Depends(require_analyst),
+) -> Response:
+    """Supprime définitivement le dossier, sa piste d'audit et son PDF associé."""
+    if not dossier_store.delete_dossier(dossier_id):
+        raise HTTPException(status_code=404, detail="Dossier introuvable.")
+    return Response(status_code=204)
 
 
 @router.put("/{dossier_id}/overrides", response_model=DossierDetailResponse)
@@ -201,9 +254,47 @@ async def get_dossier_file(
         path,
         media_type="application/pdf",
         filename=detail.filename or f"{dossier_id}.pdf",
-        content_disposition_type="inline",
+        headers={"Content-Disposition": f'inline; filename="{dossier_id}.pdf"'},
+    )
+
+
+@router.get("/{dossier_id}/export.csv")
+async def export_dossier_csv(
+    dossier_id: str,
+    _user: SessionUser = Depends(require_analyst),
+) -> Response:
+    """Export tabulaire auditable des valeurs RCC, contrôles et ratios."""
+
+    detail = _detail_or_404(dossier_id)
+    content = build_rcc_csv(detail, build_compliance(detail))
+    filename = f"{safe_export_stem(detail)}.csv"
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
         headers={
-            "Cache-Control": "private, max-age=60",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/{dossier_id}/export.pdf")
+async def export_dossier_pdf(
+    dossier_id: str,
+    _user: SessionUser = Depends(require_analyst),
+) -> Response:
+    """Rapport PDF RCC paginé, généré depuis l'état serveur courant."""
+
+    detail = _detail_or_404(dossier_id)
+    content = build_rcc_pdf(detail, build_compliance(detail))
+    filename = f"{safe_export_stem(detail)}.pdf"
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
         },
     )

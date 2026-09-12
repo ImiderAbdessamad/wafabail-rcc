@@ -792,13 +792,16 @@ def _to_provenance(candidate: FinancialCandidate) -> ValueProvenance:
         raw_label=candidate.evidence.raw_label,
         raw_value=candidate.raw_value,
         column_name=candidate.evidence.column_name,
-        extraction_method="qwen_mapping",
+        extraction_method=candidate.evidence.extraction_method,
         confidence=Decimal(str(candidate.confidence)),
         source_excerpt=candidate.evidence.source_excerpt,
         section=candidate.evidence.section,
         nature=candidate.nature,
         period=candidate.period,
-        mapping_model=OLLAMA_MAPPING_MODEL,
+        mapping_model=candidate.evidence.engine or OLLAMA_MAPPING_MODEL,
+        page_type=candidate.evidence.section,
+        orientation=candidate.evidence.orientation,
+        column_role=candidate.evidence.column_role,
     )
 
 
@@ -903,7 +906,21 @@ def _pick_best(candidates: list[FinancialCandidate], *, code: str | None = None)
             ],
         )
 
+    agreeing = [
+        (candidate, amount)
+        for candidate, amount, _warnings in ranked
+        if _amounts_agree(amount, best_amount)
+    ]
     warnings: list[str] = list(parse_warnings)
+    if len(agreeing) > 1:
+        engines = {
+            candidate.evidence.engine or candidate.evidence.extraction_method
+            for candidate, _amount in agreeing
+        }
+        warnings.append(
+            f"Consensus : {len(agreeing)} observation(s) concordante(s) "
+            f"depuis {len(engines)} moteur(s)."
+        )
     if len(ranked) > 1:
         warnings.append(
             f"{len(ranked) - 1} candidat(s) de priorité inférieure conservé(s) "
@@ -915,7 +932,7 @@ def _pick_best(candidates: list[FinancialCandidate], *, code: str | None = None)
         resolved_code,
         best_amount,
         "confirmed",
-        [_to_provenance(best_candidate)],
+        [_to_provenance(candidate) for candidate, _amount in agreeing],
         warnings=warnings,
     )
 

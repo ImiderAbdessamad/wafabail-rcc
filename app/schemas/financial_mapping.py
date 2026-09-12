@@ -173,6 +173,9 @@ class MappingEvidence(BaseModel):
     column_role: ColumnRole
     source_excerpt: str = Field(min_length=1, max_length=240)
     row_index: int | None = None
+    extraction_method: str = "qwen_mapping"
+    engine: str | None = None
+    orientation: int | None = None
 
 
 class FinancialCandidate(BaseModel):

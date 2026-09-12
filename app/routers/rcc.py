@@ -1,19 +1,21 @@
-"""API jobs d'extraction bilancielle RCC (moteur v10 → champs EKIP)."""
+"""API jobs d'extraction bilancielle RCC (GLM Vision → champs EKIP)."""
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import time
 from typing import AsyncIterator, Optional
 
+import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
-from app.config import DIRECT_FINANCIAL_MAX_PAGES, MAX_UPLOAD_BYTES
+from app.config import DIRECT_FINANCIAL_MAX_PAGES, MAX_UPLOAD_BYTES, OLLAMA_URL
 from app.schemas.dossier import SessionUser
 from app.schemas.rcc import RccAnalysisResult, RccJobCreateResponse, RccJobProgress
 from app.services.auth import require_analyst
-from app.services.rcc_lab_pipeline import run_financial_job
+from app.services.direct_financial_extraction_pipeline import run_financial_job
 from app.services.dossier_store import store_pdf
 from app.services.financial_job_store import job_store
 
@@ -25,6 +27,34 @@ router = APIRouter(
 )
 
 _PIPELINE_LOCK = asyncio.Lock()
+
+
+@router.get("/system/ocr-health")
+async def ocr_health(
+    _user: SessionUser = Depends(require_analyst),
+) -> dict:
+    """État opérationnel du moteur OCR, sans exposer son URL à l'interface."""
+    started = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            response = await client.get(f"{OLLAMA_URL}/api/tags")
+            response.raise_for_status()
+            payload = response.json()
+        models = [item.get("name") for item in payload.get("models", []) if item.get("name")]
+        return {
+            "status": "online",
+            "label": "Moteur OCR opérationnel",
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+            "models_count": len(models),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Moteur OCR indisponible: %s", exc)
+        return {
+            "status": "offline",
+            "label": "Moteur OCR en attente",
+            "latency_ms": None,
+            "models_count": 0,
+        }
 
 
 async def _read_pdf_upload(file: UploadFile) -> tuple[bytes, str]:
@@ -119,6 +149,11 @@ async def stream_rcc_job(
     _user: SessionUser = Depends(require_analyst),
 ) -> StreamingResponse:
     """Server-Sent Events pour la progression du job."""
+    return _stream_job_response(job_id, route_prefix="/api/v1/rcc")
+
+
+def _stream_job_response(job_id: str, *, route_prefix: str) -> StreamingResponse:
+    """Build an authenticated job stream for an RCC or scoring facade."""
     job = job_store.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job introuvable ou expiré.")
@@ -129,7 +164,12 @@ async def stream_rcc_job(
 
     async def event_generator() -> AsyncIterator[str]:
         try:
-            progress = job_store.to_progress(job)
+            progress = job_store.to_progress(job).model_copy(
+                update={
+                    "stream_url": f"{route_prefix}/jobs/{job_id}/stream",
+                    "result_url": f"{route_prefix}/jobs/{job_id}/result",
+                }
+            )
             yield (
                 "event: job_status\n"
                 f"data: {progress.model_dump_json()}\n\n"

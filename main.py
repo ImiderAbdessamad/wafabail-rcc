@@ -7,17 +7,10 @@ Lancement :
 from __future__ import annotations
 
 import logging
-import mimetypes
 
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
-
-# Windows ne déclare pas toujours ces types : sans eux le worker PDF.js
-# (.mjs) et les décodeurs WASM sont servis en octet-stream et le lecteur échoue.
-mimetypes.add_type("text/javascript", ".mjs")
-mimetypes.add_type("application/javascript", ".mjs")
-mimetypes.add_type("application/wasm", ".wasm")
+load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import ALLOWED_ORIGINS, STATIC_DIR
 from app.db import close_db, init_db
-from app.routers import auth, dossiers, rcc
+from app.routers import auth, dossiers, rcc, scoring
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,8 +31,8 @@ app = FastAPI(
     title="Wafabail RCC API",
     description=(
         "Extraction des données bilancielles d'une liasse fiscale "
-        "et calcul des champs manquants pour enrichir le modèle EKIP. "
-        "Réponse limitée aux postes RCC métier."
+        "pour les postes RCC et les ratios de scoring financier. "
+        "Une extraction partagée alimente les deux vues métier."
     ),
     version="1.0.0",
 )
@@ -54,6 +47,7 @@ app.add_middleware(
 
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(rcc.router, prefix="/api/v1")
+app.include_router(scoring.router, prefix="/api/v1")
 app.include_router(dossiers.router, prefix="/api/v1")
 app.include_router(dossiers.audit_router, prefix="/api/v1")
 

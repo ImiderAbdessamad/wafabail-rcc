@@ -33,6 +33,17 @@ function validateFile(file) {
   return null;
 }
 
+function friendlyExtractionError(error) {
+  const message = String(error?.message || error || "");
+  if (/\/api\/tags|ollama|nicegpu|model.*missing|model not found/i.test(message)) {
+    return "Le moteur OCR est momentanément indisponible. Vérifiez son état, puis cliquez sur Réessayer.";
+  }
+  if (/timed?\s*out|timeout|connection|connexion|network|fetch/i.test(message)) {
+    return "La connexion au moteur OCR a été interrompue. Vérifiez son état, puis cliquez sur Réessayer.";
+  }
+  return message || "L’extraction n’a pas pu être terminée. Cliquez sur Réessayer.";
+}
+
 let nextKey = 0;
 
 /**
@@ -41,7 +52,7 @@ let nextKey = 0;
  * @param {boolean}  props.compact      masque le bouton « Contrôler »
  * @param {Function} props.onCompleted  (jobId, result) → { dossierId, onOpen } | void
  */
-export default function ImportPanel({ title, compact = false, onCompleted }) {
+export default function ImportPanel({ title, compact = false, onCompleted, onWorkflowStepChange }) {
   const { toast, announce } = useToasts();
   const follow = useJobFollower();
   const [jobs, setJobs] = useState([]);
@@ -63,6 +74,7 @@ export default function ImportPanel({ title, compact = false, onCompleted }) {
       }
 
       const key = `job-${nextKey++}`;
+      onWorkflowStepChange?.(0);
       setJobs((current) => [
         ...current,
         { key, file, status: "uploading", pct: 0, message: "Envoi du fichier…", indeterminate: false },
@@ -75,8 +87,9 @@ export default function ImportPanel({ title, compact = false, onCompleted }) {
             patch(key, { pct, message: `Envoi du fichier… ${pct} %` }),
         });
       } catch (err) {
-        patch(key, { status: "error", message: err.message, pct: 0, indeterminate: false });
-        if (!err.isAuth) toast(err.message, { title: `Import de ${file.name}`, type: "bad" });
+        const message = friendlyExtractionError(err);
+        patch(key, { status: "error", message, pct: 0, indeterminate: false });
+        if (!err.isAuth) toast(message, { title: `Import de ${file.name}`, type: "bad" });
         return;
       }
 
@@ -84,6 +97,7 @@ export default function ImportPanel({ title, compact = false, onCompleted }) {
         status: "running", pct: 2, indeterminate: true,
         message: "Extraction en file d'attente…", jobId: created.job_id,
       });
+      onWorkflowStepChange?.(1);
       announce(`Extraction lancée pour ${file.name}.`);
 
       try {
@@ -101,6 +115,14 @@ export default function ImportPanel({ title, compact = false, onCompleted }) {
                 : progress.pages_total
                   ? ` · ${progress.pages_total} page(s)`
                   : "";
+            const workflowStep = ["resolving", "controls"].includes(progress.current_step)
+              ? 2
+              : progress.current_step === "completed"
+                ? 3
+                : ["classifying", "extracting_page"].includes(progress.current_step)
+                  ? 1
+                  : 0;
+            onWorkflowStepChange?.(workflowStep);
             patch(key, { pct, indeterminate: pct <= 2, message: `${label}${suffix}` });
           },
         });
@@ -113,6 +135,7 @@ export default function ImportPanel({ title, compact = false, onCompleted }) {
         announce(`Extraction terminée pour ${file.name}.`);
 
         const outcome = await onCompleted?.(created.job_id, result);
+        onWorkflowStepChange?.(3);
         if (outcome?.dossierId) {
           patch(key, {
             dossierId: outcome.dossierId,
@@ -122,11 +145,12 @@ export default function ImportPanel({ title, compact = false, onCompleted }) {
         }
       } catch (err) {
         if (err.isAuth) return;
-        patch(key, { status: "error", message: err.message, pct: 100, indeterminate: false });
-        toast(err.message, { title: `Extraction de ${file.name}`, type: "bad" });
+        const message = friendlyExtractionError(err);
+        patch(key, { status: "error", message, pct: 100, indeterminate: false });
+        toast(message, { title: `Extraction de ${file.name}`, type: "bad" });
       }
     },
-    [announce, follow, onCompleted, patch, toast]
+    [announce, follow, onCompleted, onWorkflowStepChange, patch, toast]
   );
 
   function onFiles(fileList) {
@@ -148,6 +172,7 @@ export default function ImportPanel({ title, compact = false, onCompleted }) {
       />
 
       <button
+        id="rcc-dropzone"
         type="button"
         className={`dropzone${dragging ? " is-drag" : ""}`}
         aria-label="Choisir une liasse fiscale au format PDF"
@@ -164,9 +189,13 @@ export default function ImportPanel({ title, compact = false, onCompleted }) {
         <span className="dropzone-icon">
           <Icon paths={ICONS.upload} size={20} width={1.9} style={{ stroke: "var(--accent)" }} />
         </span>
-        <span className="dropzone-title">{title || "Déposez les liasses fiscales ici"}</span>
+        <span className="dropzone-kicker">Nouveau dossier RCC</span>
+        <span className="dropzone-title">{title || "Déposez vos liasses fiscales"}</span>
         <span className="dropzone-hint">
-          {`PDF uniquement · ${formatFileSize(MAX_BYTES)} maximum · l'extraction des postes RCC démarre automatiquement`}
+          Glissez-déposez les fichiers ici ou cliquez pour parcourir
+        </span>
+        <span className="dropzone-specs">
+          <span>PDF uniquement</span><span>{formatFileSize(MAX_BYTES)} maximum</span><span>Traitement séquentiel sécurisé</span>
         </span>
       </button>
 

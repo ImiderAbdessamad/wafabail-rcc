@@ -11,12 +11,15 @@ import fitz
 from PIL import Image
 
 from app.config import (
+    DOCLING_ENABLED,
+    DOCLING_SCAN_ENABLED,
     DIRECT_FINANCIAL_MAX_IMAGE_DIMENSION,
     DIRECT_FINANCIAL_MAX_PAGES,
     DIRECT_FINANCIAL_MODEL,
     DIRECT_FINANCIAL_PAGE_DELAY_SECONDS,
     DIRECT_FINANCIAL_REGION_FALLBACK,
     DIRECT_FINANCIAL_RENDER_DPI,
+    HYBRID_FINANCIAL_PIPELINE,
 )
 from app.schemas.direct_financial_extraction import (
     CompanyInfo,
@@ -49,6 +52,13 @@ from app.services.financial_orientation_detector import (
     detect_page_orientation,
     rotate_to_orientation,
 )
+from app.services.financial_document_router import (
+    PreparedFinancialPage,
+    classify_document_source,
+    extraction_variant_for_angle,
+    normalized_pages_to_pdf,
+    prepare_financial_page,
+)
 from app.services.financial_page_classifier import (
     classify_financial_page,
     next_types_to_try,
@@ -56,6 +66,12 @@ from app.services.financial_page_classifier import (
 from app.services.native_financial_recovery import recover_candidates_from_native_text
 from app.services.page_preprocessor import crop_content_regions
 from app.services.rcc_mapper import build_rcc_result
+from app.services.scoring_analysis import build_scoring_summary
+from app.services.docling_financial_adapter import (
+    DoclingDocumentResult,
+    candidates_from_docling_markdown,
+    convert_pdf_with_docling_async,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +259,8 @@ def _convert_page_output(
             )[:240]
         if not evidence.get("column_role"):
             evidence["column_role"] = "UNKNOWN"
+        evidence.setdefault("extraction_method", "glm_direct_vision")
+        evidence.setdefault("engine", DIRECT_FINANCIAL_MODEL)
         try:
             candidates.append(
                 DirectFinancialCandidate(
@@ -499,6 +517,55 @@ async def analyze_financial_document(
     )
     _emit("pages_rendered", {"count": len(rendered)})
 
+    source_kind = classify_document_source([page.native_text for page in rendered])
+    prepared_by_page: dict[int, PreparedFinancialPage] = {}
+    if HYBRID_FINANCIAL_PIPELINE:
+        for page in rendered:
+            prepared = await asyncio.to_thread(
+                prepare_financial_page,
+                page_number=page.page_number,
+                image_bytes=page.image_bytes,
+                native_text=page.native_text,
+                source_kind=source_kind,
+            )
+            prepared_by_page[page.page_number] = prepared
+            _emit(
+                "page_prepared",
+                {
+                    "page": page.page_number,
+                    "route": prepared.route,
+                    "source_kind": source_kind,
+                    "orientation": prepared.orientation.selected_angle,
+                    "orientation_method": prepared.orientation.method,
+                    "orientation_confidence": prepared.orientation.confidence,
+                    "local_ocr_confidence": prepared.local_ocr_confidence,
+                    "local_ocr_status": prepared.local_ocr_status,
+                    "inverted": prepared.visual.inverted,
+                },
+            )
+
+    docling_task: asyncio.Task[DoclingDocumentResult] | None = None
+    if HYBRID_FINANCIAL_PIPELINE and DOCLING_ENABLED:
+        use_normalized_scan = source_kind == "image_only" and DOCLING_SCAN_ENABLED
+        if source_kind != "image_only" or use_normalized_scan:
+            docling_pdf = (
+                await asyncio.to_thread(
+                    normalized_pages_to_pdf,
+                    [prepared_by_page[p.page_number] for p in rendered],
+                )
+                if use_normalized_scan
+                else pdf_bytes
+            )
+            docling_task = asyncio.create_task(
+                convert_pdf_with_docling_async(
+                    pdf_bytes=docling_pdf,
+                    filename=filename,
+                    page_count=len(rendered),
+                    force_full_page_ocr=use_normalized_scan,
+                    source_mode="normalized_scan_pdf" if use_normalized_scan else "original_pdf",
+                )
+            )
+
     page_audit: list[FinancialPageAudit] = []
     all_candidates: list[DirectFinancialCandidate] = []
     warnings: list[str] = []
@@ -512,16 +579,50 @@ async def analyze_financial_document(
 
     for rendered_page in rendered:
         page_no = rendered_page.page_number
-        orientation = detect_page_orientation(
-            rendered_page.image_bytes,
-            declared_rotation=rendered_page.declared_rotation,
-        )
-        oriented = rotate_to_orientation(rendered_page.image_bytes, orientation)
-        oriented = _downscale_png(oriented, DIRECT_FINANCIAL_MAX_IMAGE_DIMENSION)
+        prepared = prepared_by_page.get(page_no)
+        if prepared is not None:
+            orientation = prepared.orientation.selected_angle
+            oriented = prepared.extraction_image
+            classification_image = prepared.classification_image
+            classification_text = "\n".join(
+                value for value in (rendered_page.native_text, prepared.local_ocr_text) if value
+            )
+            audit_context = {
+                "source_kind": prepared.source_kind,
+                "route": prepared.route,
+                "orientation_method": prepared.orientation.method,
+                "orientation_confidence": prepared.orientation.confidence,
+                "native_chars": len((rendered_page.native_text or "").strip()),
+                "local_ocr_chars": len((prepared.local_ocr_text or "").strip()),
+                "local_ocr_confidence": prepared.local_ocr_confidence,
+                "local_ocr_status": prepared.local_ocr_status,
+                "inverted": prepared.visual.inverted,
+            }
+        else:
+            # Compatibilité : ancien chemin lorsque HYBRID_FINANCIAL_PIPELINE=false.
+            orientation = detect_page_orientation(
+                rendered_page.image_bytes,
+                declared_rotation=None,
+            )
+            oriented = rotate_to_orientation(rendered_page.image_bytes, orientation)
+            oriented = _downscale_png(oriented, DIRECT_FINANCIAL_MAX_IMAGE_DIMENSION)
+            classification_image = oriented
+            classification_text = rendered_page.native_text
+            audit_context = {
+                "source_kind": source_kind,
+                "route": "legacy_glm",
+                "orientation_method": "legacy_geometry",
+                "orientation_confidence": None,
+                "native_chars": len((rendered_page.native_text or "").strip()),
+                "local_ocr_chars": 0,
+                "local_ocr_confidence": None,
+                "local_ocr_status": "disabled",
+                "inverted": False,
+            }
 
         page_type = await classify_financial_page(
-            image_bytes=oriented,
-            native_text=rendered_page.native_text,
+            image_bytes=classification_image,
+            native_text=classification_text,
             previous_page_type=previous_type,
             use_glm_fallback=True,
             page_number=page_no,
@@ -552,7 +653,8 @@ async def analyze_financial_document(
                     orientation=orientation,  # type: ignore[arg-type]
                     extraction_status="empty",
                     extraction_strategy="classification",
-                    warnings=["Page vide."],
+                    warnings=["Page vide.", *(prepared.warnings if prepared else ())],
+                    **audit_context,
                 )
             )
             _emit("page_skipped", {"page": page_no, "page_type": page_type})
@@ -588,7 +690,8 @@ async def analyze_financial_document(
                         orientation=orientation,  # type: ignore[arg-type]
                         extraction_status="skipped",
                         extraction_strategy="classification",
-                        warnings=["Page ignorée (non financière)."],
+                        warnings=["Page ignorée (non financière).", *(prepared.warnings if prepared else ())],
+                        **audit_context,
                     )
                 )
                 _emit(
@@ -606,12 +709,14 @@ async def analyze_financial_document(
                     orientation=orientation,  # type: ignore[arg-type]
                     extraction_status="skipped",
                     extraction_strategy="classification",
+                    warnings=list(prepared.warnings if prepared else ()),
+                    **audit_context,
                 )
             )
             continue
 
-        # Essais : type classifié (+ alternates si 0 candidat) ;
-        # si orientation ≠ 0 et 0 candidat, retente aussi à 0°.
+        # Essais : type classifié (+ alternates si 0 candidat). Une orientation
+        # locale incertaine conserve 0/90/180/270 comme alternatives auditées.
         type_attempts = next_types_to_try(
             primary=page_type,  # type: ignore[arg-type]
             previous_page_type=previous_type,
@@ -628,20 +733,21 @@ async def analyze_financial_document(
         best_strategy = "full_page"
         best_latency: int | None = None
         last_error: str | None = None
-        page_warnings: list[str] = []
+        page_warnings: list[str] = list(prepared.warnings if prepared else ())
 
         working_orientation = orientation
         working_image = oriented
 
         for try_type in type_attempts:
-            # Alt orientation seulement sur le 1er type (évite 6 appels GLM).
+            # Alt orientation seulement sur le 1er type (évite l'explosion des appels GLM).
             orients = [working_orientation]
-            if (
-                try_type == type_attempts[0]
-                and orientation != 0
-                and 0 not in orients
-            ):
-                orients.append(0)
+            if try_type == type_attempts[0]:
+                if prepared is not None and prepared.orientation.confidence < 0.75:
+                    for alternative in prepared.orientation.alternatives:
+                        if alternative not in orients:
+                            orients.append(alternative)
+                elif prepared is None and orientation != 0 and 0 not in orients:
+                    orients.append(0)
 
             for try_orient in orients:
                 if try_orient == working_orientation and try_orient == orientation:
@@ -649,11 +755,10 @@ async def analyze_financial_document(
                 elif try_orient == working_orientation:
                     img = working_image
                 else:
-                    img = rotate_to_orientation(
-                        rendered_page.image_bytes, try_orient
-                    )
-                    img = _downscale_png(
-                        img, DIRECT_FINANCIAL_MAX_IMAGE_DIMENSION
+                    img = await asyncio.to_thread(
+                        extraction_variant_for_angle,
+                        rendered_page.image_bytes,
+                        try_orient,
                     )
 
                 cands, latency_ms, strategy, err = await _extract_once(
@@ -721,6 +826,7 @@ async def analyze_financial_document(
                     extraction_strategy=strategy,
                     error=last_error,
                     warnings=page_warnings,
+                    **audit_context,
                 )
             )
             warnings.append(f"Page {page_no} : {last_error}")
@@ -776,6 +882,7 @@ async def analyze_financial_document(
                 candidates_count=len(page_candidates),
                 model_latency_ms=latency_ms,
                 warnings=page_warnings,
+                **audit_context,
             )
         )
         _emit(
@@ -791,12 +898,44 @@ async def analyze_financial_document(
         if DIRECT_FINANCIAL_PAGE_DELAY_SECONDS > 0:
             await asyncio.sleep(DIRECT_FINANCIAL_PAGE_DELAY_SECONDS)
 
+    page_types_map = {
+        a.page_number: a.detected_type for a in page_audit if a.detected_type
+    }
+    orientation_by_page = {a.page_number: a.orientation for a in page_audit}
+
+    # Docling tourne en parallèle des appels GLM. Ses tables deviennent des
+    # candidats concurrents avec provenance, jamais des valeurs finales directes.
+    docling_result = DoclingDocumentResult(status="disabled")
+    if docling_task is not None:
+        docling_result = await docling_task
+    for audit in page_audit:
+        audit.docling_status = docling_result.status
+    if docling_result.status == "success":
+        docling_candidates = candidates_from_docling_markdown(
+            docling_result.markdown_by_page,
+            page_types=page_types_map,
+            orientation_by_page=orientation_by_page,
+            scanned=source_kind == "image_only",
+        )
+        all_candidates.extend(docling_candidates)
+        warnings.append(
+            "Docling local : "
+            f"{len(docling_candidates)} candidat(s), {docling_result.tables_count} table(s), "
+            f"{docling_result.latency_ms} ms, source={docling_result.source_mode}."
+        )
+        if include_markdown and markdown_pages is not None:
+            markdown_pages.extend(
+                {"page_number": page, "engine": "docling", "markdown": text}
+                for page, text in sorted(docling_result.markdown_by_page.items())
+            )
+    elif docling_result.status not in {"disabled"}:
+        warnings.append(
+            f"Docling local non utilisé ({docling_result.status}) : {docling_result.error or 'sans détail'}."
+        )
+
     # Filet de sécurité : CA / dettes vides / RE CPC depuis texte natif
     native_by_page = {
         p.page_number: p.native_text for p in rendered if (p.native_text or "").strip()
-    }
-    page_types_map = {
-        a.page_number: a.detected_type for a in page_audit if a.detected_type
     }
     before = len(all_candidates)
     all_candidates = recover_candidates_from_native_text(
@@ -816,10 +955,18 @@ async def analyze_financial_document(
     _emit("running_controls", {})
     accounting_checks = run_accounting_controls(dataset)
     dataset = invalidate_conflicting_fields(dataset, accounting_checks)
+    scoring_summary = build_scoring_summary(dataset)
     warnings.extend(dataset.warnings)
     for check in accounting_checks:
         if check.status == "failed":
             warnings.append(f"Contrôle comptable : {check.code} — {check.message}")
+
+    engines = ["native_pdf", "glm_vision"]
+    if any(a.local_ocr_chars > 0 for a in page_audit):
+        engines.append("rapidocr")
+    if docling_result.status == "success":
+        engines.append("docling_tableformer")
+    pipeline_name = "hybrid_local_evidence_v1" if HYBRID_FINANCIAL_PIPELINE else "glm_direct"
 
     batch = DirectFinancialExtractionBatch(
         model=DIRECT_FINANCIAL_MODEL,
@@ -846,14 +993,21 @@ async def analyze_financial_document(
             model=DIRECT_FINANCIAL_MODEL,
             page_audit=page_audit,
             warnings=list(batch.warnings),
+            pipeline=pipeline_name,
+            source_kind=source_kind,
+            engines=engines,
+            docling_status=docling_result.status,
+            docling_latency_ms=docling_result.latency_ms,
         ),
         dataset=dataset,
         warnings=warnings,
         accounting_checks=accounting_checks,
+        scoring=scoring_summary,
     )
     if include_markdown and markdown_pages:
         result.warnings.append(
-            f"Markdown demandé ignoré en mode RCC ({len(markdown_pages)} page(s))."
+            f"Markdown Docling utilisé comme preuve interne ({len(markdown_pages)} page(s)); "
+            "les valeurs restent exposées via leurs zones d'évidence."
         )
     _emit(
         "result_ready",
@@ -889,6 +1043,7 @@ async def run_financial_job(
         step_map = {
             "pdf_validated": ("validating", 5, "PDF validé"),
             "pages_rendered": ("rendering", 15, "Pages rendues"),
+            "page_prepared": ("preprocessing", None, None),
             "page_classified": ("classifying", None, None),
             "page_extracted": ("extracting_page", None, None),
             "page_skipped": ("extracting_page", None, None),

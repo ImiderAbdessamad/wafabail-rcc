@@ -60,6 +60,16 @@ class DossierDetail(DossierSummary):
     overrides: list[FieldOverride] = Field(default_factory=list)
 
 
+class AnalystFieldValue(BaseModel):
+    """Valeur RCC compacte destinée aux outils de travail des analystes."""
+
+    code: str
+    label: str
+    category: str
+    value: Optional[float | str] = None
+    unit: Optional[str] = "MAD"
+
+
 class DossierListResponse(BaseModel):
     items: list[DossierSummary]
     total: int

@@ -4,7 +4,10 @@ __pycache__/
 .Python
 
 .env
+.env.*
+!.env.example
 data/
+tmp/
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
@@ -18,10 +21,12 @@ dist/
 build/
 
 .pytest_cache/
+.ipynb_checkpoints/
 .mypy_cache/
 .ruff_cache/
 .coverage
 htmlcov/
+*.log
 
 .idea/
 .vscode/
@@ -32,4 +37,8 @@ Thumbs.db
 # Front-end React
 frontend/node_modules/
 frontend/dist/
-frontend/public/pdfjs/
+frontend/.vite/
+
+# Local financial statements belong under the ignored data/ tree.
+/*.pdf
+use-case-Scoring/data/

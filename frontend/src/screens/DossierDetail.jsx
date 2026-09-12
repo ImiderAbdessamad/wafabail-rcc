@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import * as api from "../lib/api.js";
-import { exportDossierJson, exportDossierPdf, exportDossierWorkbook } from "../lib/dossierExport.js";
 import { STATUS_META } from "../lib/fields.js";
 import { formatAmount, formatAmountMad, formatDate, pluralize } from "../lib/format.js";
 import Icon, { ICONS } from "../components/Icon.jsx";
@@ -12,7 +11,9 @@ import Banner from "../components/detail/Banner.jsx";
 import CompliancePanel from "../components/detail/CompliancePanel.jsx";
 import FieldGroups from "../components/detail/FieldGroups.jsx";
 import ViewerPane from "../components/detail/ViewerPane.jsx";
-import { useSession } from "../hooks/useSession.jsx";
+import {
+  EscalateModal, RejectModal, ValidatedModal,
+} from "../components/detail/DetailModals.jsx";
 import { useToasts } from "../hooks/useToasts.jsx";
 
 const SAVE_DEBOUNCE = 650;
@@ -21,7 +22,6 @@ export default function DossierDetail({ onDossierChanged }) {
   const { dossierId } = useParams();
   const navigate = useNavigate();
   const { toast, announce } = useToasts();
-  const { user } = useSession();
 
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -33,9 +33,14 @@ export default function DossierDetail({ onDossierChanged }) {
   const [targetCode, setTargetCode] = useState(null);
   const [savingCodes, setSavingCodes] = useState(new Set());
   const [formOnly, setFormOnly] = useState(false);
+  const [modal, setModal] = useState(null); // "reject" | "escalate" | "validated"
+  const [busyAction, setBusyAction] = useState(null);
+  const [busyExport, setBusyExport] = useState(null);
 
   const pendingEdits = useRef(new Map()); // code → valeur en attente
   const timers = useRef(new Map());
+  const inFlightSaves = useRef(new Set());
+  const lastSaveError = useRef(null);
   const rowNodes = useRef(new Map());
 
   const registerRow = useCallback((code, node) => {
@@ -75,12 +80,18 @@ export default function DossierDetail({ onDossierChanged }) {
   }, [dossierId, load]);
 
   // Les corrections en attente partent avant de quitter l'écran ou l'onglet.
-  const flushAll = useCallback(() => {
+  const flushAll = useCallback(async ({ strict = false } = {}) => {
     for (const [code, timer] of timers.current) {
       clearTimeout(timer);
       timers.current.delete(code);
       if (pendingEdits.current.has(code)) saveFieldRef.current(code);
     }
+    const results = await Promise.allSettled([...inFlightSaves.current]);
+    const failed = results.find((result) => result.status === "rejected");
+    if (strict && (failed || lastSaveError.current)) {
+      throw failed?.reason || lastSaveError.current;
+    }
+    return results;
   }, []);
 
   const saveFieldRef = useRef(() => {});
@@ -110,28 +121,39 @@ export default function DossierDetail({ onDossierChanged }) {
   }, []);
 
   const saveField = useCallback(
-    async (code) => {
-      if (!pendingEdits.current.has(code)) return;
+    (code) => {
+      if (!pendingEdits.current.has(code)) return Promise.resolve();
       const value = pendingEdits.current.get(code);
       pendingEdits.current.delete(code);
       markSaving(code, true);
 
-      try {
-        const updated = await api.dossiers.saveOverrides(dossierId, [
-          { field_code: code, corrected_value: value },
-        ]);
-        setData(updated);
-        onDossierChanged?.(updated.dossier);
-        announce(`${code} enregistré.`);
-      } catch (err) {
-        if (!err.isAuth) {
-          toast(err.message, { title: "Correction non enregistrée", type: "bad" });
-          // Retour arrière : on recharge l'état serveur qui fait autorité.
-          load(dossierId, { silent: true });
+      const request = (async () => {
+        try {
+          const updated = await api.dossiers.saveOverrides(dossierId, [
+            { field_code: code, corrected_value: value },
+          ]);
+          setData(updated);
+          onDossierChanged?.(updated.dossier);
+          announce(`${code} enregistré.`);
+          lastSaveError.current = null;
+          return updated;
+        } catch (err) {
+          lastSaveError.current = err;
+          if (!err.isAuth) {
+            toast(err.message, { title: "Correction non enregistrée", type: "bad" });
+            // Retour arrière : on recharge l'état serveur qui fait autorité.
+            load(dossierId, { silent: true });
+          }
+          throw err;
+        } finally {
+          markSaving(code, false);
         }
-      } finally {
-        markSaving(code, false);
-      }
+      })();
+
+      inFlightSaves.current.add(request);
+      const clearRequest = () => inFlightSaves.current.delete(request);
+      request.then(clearRequest, clearRequest);
+      return request;
     },
     [announce, dossierId, load, markSaving, onDossierChanged, toast]
   );
@@ -149,12 +171,13 @@ export default function DossierDetail({ onDossierChanged }) {
         return;
       }
 
+      lastSaveError.current = null;
       pendingEdits.current.set(code, value);
       timers.current.set(
         code,
         setTimeout(() => {
           timers.current.delete(code);
-          saveField(code);
+          void saveField(code).catch(() => {});
         }, SAVE_DEBOUNCE)
       );
     },
@@ -168,7 +191,7 @@ export default function DossierDetail({ onDossierChanged }) {
         clearTimeout(timer);
         timers.current.delete(code);
       }
-      if (pendingEdits.current.has(code)) saveField(code);
+      if (pendingEdits.current.has(code)) void saveField(code).catch(() => {});
     },
     [saveField]
   );
@@ -176,16 +199,22 @@ export default function DossierDetail({ onDossierChanged }) {
   const onVerify = useCallback(
     async (code) => {
       markSaving(code, true);
+      lastSaveError.current = null;
+      const request = api.dossiers.saveOverrides(dossierId, [
+        { field_code: code, corrected_value: null, verified: true },
+      ]);
+      inFlightSaves.current.add(request);
       try {
-        const updated = await api.dossiers.saveOverrides(dossierId, [
-          { field_code: code, corrected_value: null, verified: true },
-        ]);
+        const updated = await request;
         setData(updated);
         onDossierChanged?.(updated.dossier);
         announce(`${code} marqué comme vérifié.`);
+        lastSaveError.current = null;
       } catch (err) {
+        lastSaveError.current = err;
         if (!err.isAuth) toast(err.message, { title: "Vérification non enregistrée", type: "bad" });
       } finally {
+        inFlightSaves.current.delete(request);
         markSaving(code, false);
       }
     },
@@ -212,34 +241,52 @@ export default function DossierDetail({ onDossierChanged }) {
     [data?.dossier.has_document]
   );
 
+  const patchDossier = useCallback(
+    async (payload, { successTitle, successText }) => {
+      try {
+        const updated = await api.dossiers.patch(dossierId, payload);
+        setData(updated);
+        onDossierChanged?.(updated.dossier);
+        toast(successText, { title: successTitle, type: "ok" });
+        return updated;
+      } catch (err) {
+        if (!err.isAuth) toast(err.message, { title: "Action impossible", type: "bad" });
+        return null;
+      }
+    },
+    [dossierId, onDossierChanged, toast]
+  );
+
+  async function onValidate() {
+    setBusyAction("validate");
+    const updated = await patchDossier(
+      { status: "validated" },
+      { successTitle: "Dossier validé", successText: `${dossierId} a été transmis au modèle EKIP.` }
+    );
+    setBusyAction(null);
+    if (updated) setModal("validated");
+  }
+
   async function onExport(kind) {
-    flushAll();
-    const statusLabel = (STATUS_META[data.dossier.status] || STATUS_META.pending).label;
+    setBusyExport(kind);
     try {
-      if (kind === "excel") await exportDossierWorkbook({ ...data, statusLabel });
-      else if (kind === "json") {
-        exportDossierJson({
-          ...data,
-          statusLabel,
-          exportedBy: user?.display_name || user?.username || null,
-        });
-      } else await exportDossierPdf({ ...data, statusLabel });
+      await flushAll({ strict: true });
+      const fresh = await api.dossiers.get(dossierId);
+      setData(fresh);
+      await api.dossiers.exportFile(fresh.dossier.id, kind);
       toast(
-        kind === "excel"
-          ? "Le classeur contient une synthèse, les données RCC, les zones extraites et les contrôles."
-          : kind === "json"
-            ? "Les 20 postes RCC, les valeurs effectives, les preuves et les contrôles sont dans le fichier."
-            : "Le rapport analyste est prêt à être partagé ou archivé.",
+        kind === "csv"
+          ? "Le CSV contient les postes RCC, contrôles, ratios, provenance et audit page par page."
+          : "Le rapport analyste paginé est prêt à être partagé ou archivé.",
         {
-          title:
-            kind === "excel" ? "Classeur Excel téléchargé"
-              : kind === "json" ? "Fichier JSON téléchargé"
-                : "Rapport PDF téléchargé",
+          title: kind === "csv" ? "CSV téléchargé" : "Rapport PDF téléchargé",
           type: "ok",
         }
       );
     } catch (err) {
       toast(err.message || "L'export n'a pas pu être généré.", { title: "Export impossible", type: "bad" });
+    } finally {
+      setBusyExport(null);
     }
   }
 
@@ -296,6 +343,15 @@ export default function DossierDetail({ onDossierChanged }) {
   const overrides = new Map(dossier.overrides.map((o) => [o.field_code, o]));
   const meta = STATUS_META[dossier.status] || STATUS_META.pending;
   const balance = dossier.result?.controls.find((c) => c.code === "bilan_equilibre");
+  const fields = dossier.result?.fields ?? [];
+  // The server applies analyst overrides and derived-field rules when it
+  // computes compliance. Reuse that authoritative count so this summary can
+  // never disagree with the conformity panel below it.
+  const populatedFields = Math.max(0, fields.length - (compliance?.missing_fields?.length ?? 0));
+  const averageConfidence = fields.length
+    ? Math.round(100 * fields.reduce((sum, field) => sum + (field.confidence || 0), 0) / fields.length)
+    : 0;
+  const controlsPassed = (dossier.result?.controls ?? []).filter((control) => control.status === "passed").length;
 
   return (
     <section className="view view-detail is-entering">
@@ -333,17 +389,49 @@ export default function DossierDetail({ onDossierChanged }) {
 
         <div className="detail-actions">
           <div className="detail-action-group" aria-label="Exporter le dossier">
-            <button type="button" className="btn btn-ghost" onClick={() => onExport("json")}>
+            <button type="button" className="btn btn-ghost" disabled={Boolean(busyExport)} onClick={() => onExport("csv")}>
               <Icon paths={ICONS.file} size={14} width={1.9} />
-              Exporter JSON
+              {busyExport === "csv" ? "Génération…" : "CSV"}
             </button>
-            <button type="button" className="btn btn-ghost" onClick={() => onExport("excel")}>
+            <button type="button" className="btn btn-dark" disabled={Boolean(busyExport)} onClick={() => onExport("pdf")}>
               <Icon paths={ICONS.file} size={14} width={1.9} />
-              Exporter Excel
+              {busyExport === "pdf" ? "Génération…" : "Rapport PDF"}
             </button>
-            <button type="button" className="btn btn-dark" onClick={() => onExport("pdf")}>
-              <Icon paths={ICONS.file} size={14} width={1.9} />
-              Rapport PDF
+          </div>
+          <span className="detail-action-divider" aria-hidden="true" />
+          <div className="detail-action-group" aria-label="Décision analyste">
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={dossier.status === "escalated"}
+              onClick={() => setModal("escalate")}
+            >
+              Demander un arbitrage
+            </button>
+            <button
+              type="button"
+              className="btn btn-danger"
+              disabled={dossier.status === "rejected"}
+              onClick={() => setModal("reject")}
+            >
+              Rejeter
+            </button>
+            <button
+              type="button"
+              className={`btn ${compliance.can_validate ? "btn-ok" : "btn-ghost"} hint${busyAction === "validate" ? " is-busy" : ""}`}
+              disabled={!compliance.can_validate || dossier.status === "validated" || busyAction === "validate"}
+              data-hint={
+                dossier.status === "validated"
+                  ? "Ce dossier est déjà validé"
+                  : compliance.can_validate
+                    ? "Transmettre les postes RCC au modèle EKIP"
+                    : `${pluralize(compliance.blockers, "règle")} de conformité bloquante(s) à lever avant validation`
+              }
+              onClick={onValidate}
+            >
+              <Icon paths={ICONS.check} size={14} width={2.4} />
+              <span className="btn-label">Valider le dossier</span>
+              <span className="btn-spinner" aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -382,6 +470,14 @@ export default function DossierDetail({ onDossierChanged }) {
         </button>
 
         <div className="split-form scroll">
+          <DossierSnapshot
+            dossier={dossier}
+            compliance={compliance}
+            populatedFields={populatedFields}
+            averageConfidence={averageConfidence}
+            controlsPassed={controlsPassed}
+          />
+
           {balance?.status === "failed" ? (
             <Banner
               tone="bad"
@@ -450,10 +546,45 @@ export default function DossierDetail({ onDossierChanged }) {
 
           <ControlsPanel controls={dossier.result?.controls ?? []} />
 
+          <ScoringPanel scoring={dossier.result?.scoring} />
+
           <ExtractionWarnings warnings={dossier.result?.warnings ?? []} />
         </div>
       </div>
 
+      <RejectModal
+        open={modal === "reject"}
+        dossier={dossier}
+        onClose={() => setModal(null)}
+        onConfirm={async ({ motif, comment }) => {
+          const updated = await patchDossier(
+            { status: "rejected", motif, comment },
+            { successTitle: "Dossier rejeté", successText: `${dossier.id} retourne au gestionnaire.` }
+          );
+          if (updated) navigate("/dossiers");
+          return Boolean(updated);
+        }}
+      />
+
+      <EscalateModal
+        open={modal === "escalate"}
+        compliance={compliance}
+        onClose={() => setModal(null)}
+        onConfirm={async ({ comment }) => {
+          const updated = await patchDossier(
+            { status: "escalated", motif: "Arbitrage superviseur demandé", comment },
+            { successTitle: "Arbitrage demandé", successText: `${dossier.id} sort de votre file.` }
+          );
+          return Boolean(updated);
+        }}
+      />
+
+      <ValidatedModal
+        open={modal === "validated"}
+        dossier={dossier}
+        compliance={compliance}
+        onClose={() => { setModal(null); navigate("/dossiers"); }}
+      />
     </section>
   );
 }
@@ -505,6 +636,95 @@ function ControlsPanel({ controls }) {
           </div>
         );
       })}
+    </section>
+  );
+}
+
+function DossierSnapshot({ dossier, compliance, populatedFields, averageConfidence, controlsPassed }) {
+  const extraction = dossier.result?.extraction;
+  const controlsTotal = dossier.result?.controls?.length ?? 0;
+  const scoring = dossier.result?.scoring;
+  const sourceLabels = {
+    born_digital: "PDF natif",
+    hybrid: "Document hybride",
+    image_only: "Document scanné",
+  };
+
+  return (
+    <section className="analysis-overview" aria-label="Synthèse de l'analyse RCC">
+      <div className="analysis-overview-head">
+        <div>
+          <span className="analysis-kicker">Synthèse de l'analyse</span>
+          <h2>Qualité et exploitabilité du dossier</h2>
+        </div>
+        <div className="engine-tags" aria-label="Pipeline d'extraction utilisé">
+          <span>{sourceLabels[extraction?.source_kind] || "Source non qualifiée"}</span>
+          {(extraction?.engines || []).map((engine) => <span key={engine}>{engine}</span>)}
+        </div>
+      </div>
+      <div className="analysis-metrics">
+        <article>
+          <small>Postes RCC renseignés</small>
+          <strong>{populatedFields}<span>/20</span></strong>
+          <p>{dossier.completeness_pct}% de complétude</p>
+        </article>
+        <article>
+          <small>Confiance OCR moyenne</small>
+          <strong>{averageConfidence}<span>%</span></strong>
+          <p>{dossier.overrides.length} contrôle(s) analyste</p>
+        </article>
+        <article>
+          <small>Contrôles comptables</small>
+          <strong>{controlsPassed}<span>/{controlsTotal}</span></strong>
+          <p>{controlsTotal ? "vérifications exécutées" : "aucun contrôle disponible"}</p>
+        </article>
+        <article className={compliance.can_validate ? "is-ready" : "is-blocked"}>
+          <small>Décision RCC</small>
+          <strong>{compliance.pct}<span>%</span></strong>
+          <p>{compliance.can_validate ? "prêt à transmettre" : `${compliance.blockers} bloquant(s)`}</p>
+        </article>
+        <article>
+          <small>Ratios financiers</small>
+          <strong>{scoring ? scoring.calculable_ratio_count : "—"}<span>{scoring ? `/${scoring.total_ratio_count}` : ""}</span></strong>
+          <p>{scoring ? "calculables" : "non disponibles"}</p>
+        </article>
+      </div>
+    </section>
+  );
+}
+
+function ScoringPanel({ scoring }) {
+  if (!scoring) return null;
+
+  return (
+    <section className="panel scoring-panel">
+      <div className="scoring-head">
+        <div>
+          <span className="analysis-kicker">Scoring financier</span>
+          <h2>Ratios issus de la même extraction RCC</h2>
+          <p>Aucun second passage OCR : les valeurs et leur provenance restent identiques.</p>
+        </div>
+        <Badge>{`${scoring.calculable_ratio_count}/${scoring.total_ratio_count} calculables`}</Badge>
+      </div>
+      {scoring.policy_status !== "approved" ? (
+        <div className="scoring-policy">
+          <strong>Score final volontairement désactivé.</strong>
+          <span>Les pondérations et seuils de décision ne sont pas encore approuvés.</span>
+        </div>
+      ) : null}
+      <div className="ratio-grid">
+        {(scoring.ratios || []).map((ratio) => (
+          <article className={`ratio-card is-${ratio.status}`} key={ratio.code}>
+            <div>
+              <small>{ratio.code.replace(/_/g, " ")}</small>
+              <h3>{ratio.label}</h3>
+            </div>
+            <strong>{ratio.value == null ? "—" : `${formatAmount(ratio.value, { decimals: true })}${ratio.unit ? ` ${ratio.unit}` : ""}`}</strong>
+            <p>{ratio.status.replace(/_/g, " ")}</p>
+            <code>{ratio.formula}</code>
+          </article>
+        ))}
+      </div>
     </section>
   );
 }

@@ -58,6 +58,8 @@ def _make(
             column_role=role,  # type: ignore[arg-type]
             source_excerpt=f"{label}|{raw_value}"[:240],
             orientation=0,
+            extraction_method="native_pdf_regex",
+            engine="pymupdf_native_text",
         ),
         warnings=["Récupéré depuis texte natif PDF (filet de sécurité)."],
     )

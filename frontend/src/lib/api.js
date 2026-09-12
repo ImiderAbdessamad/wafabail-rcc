@@ -66,6 +66,55 @@ async function request(path, { method = "GET", body, signal, isForm = false, aut
   return payload;
 }
 
+function filenameFromDisposition(value, fallback) {
+  if (!value) return fallback;
+  const encoded = value.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (encoded) {
+    try { return decodeURIComponent(encoded); } catch { return encoded; }
+  }
+  return value.match(/filename="?([^";]+)"?/i)?.[1] || fallback;
+}
+
+async function downloadRequest(path, fallbackName) {
+  let response;
+  try {
+    response = await fetch(`${BASE}${path}`, { credentials: "same-origin" });
+  } catch {
+    throw new ApiError(
+      "Serveur injoignable. Vérifiez que l'API est démarrée puis réessayez.",
+      { status: 0 }
+    );
+  }
+
+  if (response.status === 401) {
+    onUnauthorized?.();
+    throw new ApiError("Session expirée — reconnectez-vous.", { status: 401 });
+  }
+  if (!response.ok) {
+    const isJson = (response.headers.get("content-type") || "").includes("application/json");
+    const payload = isJson ? await response.json().catch(() => null) : null;
+    throw new ApiError(
+      detailToMessage(payload?.detail, `Erreur ${response.status} lors de l'export.`),
+      { status: response.status, body: payload }
+    );
+  }
+
+  const blob = await response.blob();
+  const filename = filenameFromDisposition(
+    response.headers.get("content-disposition"),
+    fallbackName
+  );
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1200);
+  return { filename, size: blob.size };
+}
+
 /* ------------------------------------------------------------ Session --- */
 
 export const auth = {
@@ -93,6 +142,8 @@ export const dossiers = {
   create: (payload) => request("/rcc/dossiers", { method: "POST", body: payload }),
   patch: (id, payload) =>
     request(`/rcc/dossiers/${encodeURIComponent(id)}`, { method: "PATCH", body: payload }),
+  remove: (id) =>
+    request(`/rcc/dossiers/${encodeURIComponent(id)}`, { method: "DELETE" }),
   saveOverrides: (id, overrides) =>
     request(`/rcc/dossiers/${encodeURIComponent(id)}/overrides`, {
       method: "PUT",
@@ -103,10 +154,23 @@ export const dossiers = {
   audit: (id, { signal } = {}) =>
     request(`/rcc/dossiers/${encodeURIComponent(id)}/audit`, { signal }),
   fileUrl: (id) => `${BASE}/rcc/dossiers/${encodeURIComponent(id)}/file`,
+  exportFile: (id, format) => {
+    if (!new Set(["csv", "pdf"]).has(format)) {
+      throw new ApiError("Format d'export non pris en charge.", { status: 422 });
+    }
+    return downloadRequest(
+      `/rcc/dossiers/${encodeURIComponent(id)}/export.${format}`,
+      `RCC-${id}.${format}`
+    );
+  },
 };
 
 export const audit = {
   all: ({ signal } = {}) => request("/rcc/audit", { signal }),
+};
+
+export const system = {
+  ocrHealth: ({ signal } = {}) => request("/rcc/system/ocr-health", { signal }),
 };
 
 /* --------------------------------------------------------------- Jobs --- */
